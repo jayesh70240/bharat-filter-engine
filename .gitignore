@@ -1,0 +1,36 @@
+# Ruby
+*.gem
+/.bundle/
+/vendor/bundle/
+
+# Bundler
+Gemfile.lock
+
+# Documentation
+/.yardoc/
+/.yardoc/
+/_yardoc/
+/doc/
+/rdoc/
+
+# Coverage
+/coverage/
+
+# RubyGems
+/pkg/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+
+# IDE / Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+/tmp/
+/.cache/
