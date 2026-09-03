@@ -45,6 +45,9 @@ Gem::Specification.new do |spec|
       "https://github.com/jayesh70240/bharat-filter-engine",
 
     "changelog_uri" =>
-      "https://github.com/jayesh70240/bharat-filter-engine/blob/main/CHANGELOG.md"
+      "https://github.com/jayesh70240/bharat-filter-engine/blob/main/CHANGELOG.md",
+  
+    "bug_tracker_uri" =>
+      "https://github.com/jayesh70240/bharat-filter-engine/issues"
   }
 end
