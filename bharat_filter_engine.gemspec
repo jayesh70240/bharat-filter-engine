@@ -42,9 +42,9 @@ Gem::Specification.new do |spec|
 
   spec.metadata = {
     "source_code_uri" =>
-      "https://github.com/jayesh70240/bharat_filter_engine",
+      "https://github.com/jayesh70240/bharat-filter-engine",
 
     "changelog_uri" =>
-      "https://github.com/jayesh70240/bharat_filter_engine/blob/main/CHANGELOG.md"
+      "https://github.com/jayesh70240/bharat-filter-engine/blob/main/CHANGELOG.md"
   }
 end
