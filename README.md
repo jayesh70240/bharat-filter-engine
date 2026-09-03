@@ -8,7 +8,7 @@ query string) into a filtered `ActiveRecord::Relation` — including
 filters on associated models, free-text search, and dynamically
 populated dropdown values.
 
-[![Gem Version](https://img.shields.io/badge/version-0.1.1-blue)](CHANGELOG.md)
+[![Gem Version](https://img.shields.io/badge/version-0.1.2-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
