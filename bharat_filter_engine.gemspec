@@ -18,7 +18,7 @@ Gem::Specification.new do |spec|
     "and AND/OR search filters."
 
   spec.homepage =
-    "https://github.com/jayesh70240/bharat_filter_engine"
+    "https://github.com/jayesh70240/bharat-filter-engine"
 
   spec.license = "MIT"
 
