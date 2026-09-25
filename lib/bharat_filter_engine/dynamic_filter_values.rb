@@ -2,7 +2,7 @@
 
 module BharatFilterEngine
   class DynamicFilterValues
-    def initialize(scope:, model: nil, field:)
+    def initialize(scope:, field:, model: nil)
       @scope = scope
       @model = model || scope.klass
       @field = field.to_s
@@ -24,7 +24,7 @@ module BharatFilterEngine
       nested = result[:associations].present?
 
       not_condition =
-        nested ? { result[:table_name] => { column => [nil, ""] } } : { column => [nil, ""] }
+        nested ? { result[:table_name] => { column => [nil, ''] } } : { column => [nil, ''] }
 
       qualified_column =
         nested ? Arel.sql("#{result[:table_name]}.#{column}") : column

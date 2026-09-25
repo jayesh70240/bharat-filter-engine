@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
-require "bundler/setup"
-require "active_record"
-require "database_cleaner/active_record"
-require "bharat_filter_engine"
-require "sqlite3"
+require 'bundler/setup'
+require 'active_record'
+require 'database_cleaner/active_record'
+require 'bharat_filter_engine'
+require 'sqlite3'
 
 ActiveRecord::Base.establish_connection(
-  adapter: "sqlite3",
-  database: ":memory:"
+  adapter: 'sqlite3',
+  database: ':memory:'
 )
 
 ActiveRecord::Schema.define do
@@ -41,28 +41,23 @@ ActiveRecord::Schema.define do
   end
 end
 
-
 class Organization < ActiveRecord::Base
   has_many :clients
 end
-
 
 class Client < ActiveRecord::Base
   belongs_to :organization
   has_many :leads
 end
 
-
 class Lead < ActiveRecord::Base
   belongs_to :client
   has_many :sales
 end
 
-
 class Sale < ActiveRecord::Base
   belongs_to :lead
 end
-
 
 RSpec.configure do |config|
   config.before(:suite) do

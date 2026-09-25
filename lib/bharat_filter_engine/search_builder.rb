@@ -13,7 +13,7 @@ module BharatFilterEngine
 
       search = value.to_s.strip
 
-      if search.include?("=")
+      if search.include?('=')
         field_based_search(search)
       else
         simple_search(search)
@@ -29,7 +29,7 @@ module BharatFilterEngine
       @allowed_columns.each do |dbcolumn|
         next unless valid_field?(dbcolumn)
 
-        if dbcolumn.include?("__")
+        if dbcolumn.include?('__')
           @scope, condition =
             nested_condition(
               @scope,
@@ -60,11 +60,11 @@ module BharatFilterEngine
     # is skipped and unrelated records leak through unfiltered.
     def field_based_search(search)
       and_conditions =
-        search.split("&").map do |and_group|
+        search.split('&').map do |and_group|
           or_conditions =
-            and_group.split("|").filter_map do |expression|
+            and_group.split('|').filter_map do |expression|
               field, search_value =
-                expression.split("=", 2)
+                expression.split('=', 2)
 
               next if field.blank?
               next if search_value.blank?
@@ -72,7 +72,7 @@ module BharatFilterEngine
 
               query = "%#{search_value.strip}%"
 
-              if field.include?("__")
+              if field.include?('__')
                 @scope, condition =
                   nested_condition(
                     @scope,
@@ -81,7 +81,7 @@ module BharatFilterEngine
                   )
 
                 condition
-              elsif field == "id"
+              elsif field == 'id'
                 quoted_column =
                   @scope.klass
                         .connection
@@ -110,7 +110,7 @@ module BharatFilterEngine
     end
 
     def valid_field?(field)
-      if field.include?("__")
+      if field.include?('__')
         !resolver.resolve_column(field).nil?
       else
         @scope.klass.column_names.include?(field)
@@ -130,8 +130,8 @@ module BharatFilterEngine
 
       condition =
         result[:klass]
-          .arel_table[result[:column]]
-          .matches(query)
+        .arel_table[result[:column]]
+        .matches(query)
 
       [joined_scope, condition]
     end

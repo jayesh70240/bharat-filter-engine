@@ -1,79 +1,78 @@
-require "spec_helper"
+# frozen_string_literal: true
+
+require 'spec_helper'
 
 RSpec.describe BharatFilterEngine::SearchBuilder do
-
   let!(:client) do
     Client.create!(
-      name: "John Doe",
-      email: "john@example.com"
+      name: 'John Doe',
+      email: 'john@example.com'
     )
   end
 
   let!(:lead) do
     Lead.create!(
-      source: "google",
+      source: 'google',
       client: client
     )
   end
 
   let!(:sale) do
     Sale.create!(
-      stage: "qualified",
+      stage: 'qualified',
       lead: lead
     )
   end
 
-  it "supports simple search" do
-
+  it 'supports simple search' do
     result =
       described_class.new(
         scope: Sale.all,
-        allowed_columns: [
-          :stage,
-          :"lead__source"
+        allowed_columns: %i[
+          stage
+          lead__source
         ]
-      ).apply("google")
+      ).apply('google')
 
     expect(result).to contain_exactly(sale)
   end
 
-  it "supports case insensitive search" do
+  it 'supports case insensitive search' do
     result =
       described_class.new(
         scope: Sale.all,
         allowed_columns: [:stage]
-      ).apply("QUAL")
+      ).apply('QUAL')
 
     expect(result).to contain_exactly(sale)
   end
 
-  it "supports nested field search" do
-
+  it 'supports nested field search' do
     result =
       described_class.new(
         scope: Sale.all,
         allowed_columns: [
-          :"lead__client__name"
+          :lead__client__name
         ]
       ).apply(
-        "lead__client__name=John"
+        'lead__client__name=John'
       )
 
     expect(result).to contain_exactly(sale)
   end
 
-  it "supports multi-level association search" do
+  it 'supports multi-level association search' do
     organization = Organization.create!(
-      name: "Acme"
+      name: 'Acme'
     )
 
     client_two = Client.create!(
-      name: "Jane",
+      name: 'Jane',
       organization: organization
     )
 
     lead_two = Lead.create!(
-      source: "referral",
+      source: 'referral',
       client: client_two
     )
 
@@ -85,56 +84,55 @@ RSpec.describe BharatFilterEngine::SearchBuilder do
       described_class.new(
         scope: Sale.all,
         allowed_columns: [
-          :"lead__client__organization__name"
+          :lead__client__organization__name
         ]
       ).apply(
-        "lead__client__organization__name=Acme"
+        'lead__client__organization__name=Acme'
       )
 
     expect(result).to contain_exactly(sale_two)
   end
 
-  it "supports OR search" do
-
+  it 'supports OR search' do
     result =
       described_class.new(
         scope: Sale.all,
-        allowed_columns: [
-          :stage,
-          :"lead__source"
+        allowed_columns: %i[
+          stage
+          lead__source
         ]
       ).apply(
-        "stage=qualified|lead__source=google"
+        'stage=qualified|lead__source=google'
       )
 
     expect(result).to contain_exactly(sale)
   end
 
-  it "supports combined AND and OR conditions" do
+  it 'supports combined AND and OR conditions' do
     sale_one = Sale.create!(
-      stage: "qualified",
-      approval_status: "approved"
+      stage: 'qualified',
+      approval_status: 'approved'
     )
 
     sale_two = Sale.create!(
-      stage: "qualified",
-      approval_status: "pending"
+      stage: 'qualified',
+      approval_status: 'pending'
     )
 
     Sale.create!(
-      stage: "new",
-      approval_status: "approved"
+      stage: 'new',
+      approval_status: 'approved'
     )
 
     result =
       described_class.new(
         scope: Sale.all,
-        allowed_columns: [
-          :stage,
-          :approval_status
+        allowed_columns: %i[
+          stage
+          approval_status
         ]
       ).apply(
-        "stage=qualified&approval_status=approved|approval_status=pending"
+        'stage=qualified&approval_status=approved|approval_status=pending'
       )
 
     expect(result).to contain_exactly(
@@ -143,13 +141,13 @@ RSpec.describe BharatFilterEngine::SearchBuilder do
     )
   end
 
-  it "returns no records when the searched field is not configured" do
+  it 'returns no records when the searched field is not configured' do
     result =
       described_class.new(
         scope: Sale.all,
         allowed_columns: [:stage]
       ).apply(
-        "unknown=value"
+        'unknown=value'
       )
 
     expect(result).to be_empty

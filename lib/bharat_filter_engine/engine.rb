@@ -2,9 +2,7 @@
 
 module BharatFilterEngine
   class Engine
-
     class << self
-
       def apply(scope:, config:, params:)
         new(
           scope,
@@ -16,7 +14,7 @@ module BharatFilterEngine
       def filter_values(scope:, config:, params:)
         field =
           params[:filter_field] ||
-          params["filter_field"]
+          params['filter_field']
 
         rule =
           config[field&.to_sym]
@@ -38,20 +36,18 @@ module BharatFilterEngine
           field: field_name
         ).call || []
       end
-
     end
 
     def initialize(scope, config = {}, params = {})
-        @scope = scope
-        @config = config || {}
-        @params = normalize_params(params)
+      @scope = scope
+      @config = config || {}
+      @params = normalize_params(params)
     end
 
     def call
       scope = @scope
 
       @config.each do |key, raw_rule|
-
         value =
           @params[key.to_sym]
 
@@ -126,7 +122,6 @@ module BharatFilterEngine
       value,
       table_name: nil
     )
-
       column =
         rule[:dbcolumn]
 
@@ -197,7 +192,6 @@ module BharatFilterEngine
       value,
       table_name
     )
-
       apply_condition(
         scope,
         column,
@@ -212,11 +206,10 @@ module BharatFilterEngine
       value,
       table_name
     )
-
       cast_value =
         ActiveModel::Type::Boolean
-          .new
-          .cast(value)
+        .new
+        .cast(value)
 
       apply_condition(
         scope,
@@ -232,7 +225,6 @@ module BharatFilterEngine
       value,
       table_name
     )
-
       apply_condition(
         scope,
         column,
@@ -264,7 +256,6 @@ module BharatFilterEngine
       value,
       table_name: nil
     )
-
       column =
         rule[:dbcolumn]
 
@@ -307,7 +298,6 @@ module BharatFilterEngine
       value,
       table_name: nil
     )
-
       return scope unless value.present?
 
       column =
@@ -326,10 +316,10 @@ module BharatFilterEngine
         when Hash
           [
             value[:from] ||
-              value["from"],
+              value['from'],
 
             value[:to] ||
-              value["to"]
+              value['to']
           ]
 
         when Array
@@ -337,25 +327,29 @@ module BharatFilterEngine
 
         when String
           value
-            .split(",")
-            .map(&:strip)
+        .split(',')
+        .map(&:strip)
 
         end
 
       return scope unless
         from.present? || to.present?
 
-      from =
-        normalize_date(
-          from,
-          :start
-        ) if from.present?
+      if from.present?
+        from =
+          normalize_date(
+            from,
+            :start
+          )
+      end
 
-      to =
-        normalize_date(
-          to,
-          :end
-        ) if to.present?
+      if to.present?
+        to =
+          normalize_date(
+            to,
+            :end
+          )
+      end
 
       if from.present? && to.present?
 
@@ -404,13 +398,11 @@ module BharatFilterEngine
 
     def deep_normalize_params(params)
       params.transform_values do |value|
-
         if value.is_a?(Hash)
           deep_normalize_params(value)
         else
           normalize_value(value)
         end
-
       end
     end
 
@@ -421,17 +413,17 @@ module BharatFilterEngine
       stripped =
         value.strip
 
-      if stripped.start_with?("[")
+      if stripped.start_with?('[')
         begin
           JSON.parse(stripped)
         rescue JSON::ParserError
           value
         end
 
-      elsif value.include?(",")
+      elsif value.include?(',')
 
         value
-          .split(",")
+          .split(',')
           .map(&:strip)
 
       else

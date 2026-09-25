@@ -1,52 +1,51 @@
-require "spec_helper"
+# frozen_string_literal: true
+
+require 'spec_helper'
 
 RSpec.describe BharatFilterEngine::RuleNormalizer do
+  it 'keeps modern configuration unchanged' do
+    rule = {
+      type: :single,
+      filter_type: :string,
+      dbcolumn: :stage
+    }
 
-    it "keeps modern configuration unchanged" do
+    expect(
+      described_class.call(rule)
+    ).to eq(rule)
+  end
 
-        rule = {
-        type: :single,
-        filter_type: :string,
+  it 'supports legacy configuration' do
+    result =
+      described_class.call(
+        type: :string,
         dbcolumn: :stage
-        }
+      )
 
-        expect(
-        described_class.call(rule)
-        ).to eq(rule)
-    end
+    expect(
+      result[:type]
+    ).to eq(:single)
 
-    it "supports legacy configuration" do
+    expect(
+      result[:filter_type]
+    ).to eq(:string)
+  end
 
-        result =
-        described_class.call(
-            type: :string,
-            dbcolumn: :stage
-        )
+  it 'returns nil for nil rule' do
+    expect(
+      described_class.call(nil)
+    ).to be_nil
+  end
 
-        expect(
-        result[:type]
-        ).to eq(:single)
+  it 'symbolizes rule keys' do
+    result = described_class.call(
+      'type' => :single,
+      'filter_type' => :string,
+      'dbcolumn' => :stage
+    )
 
-        expect(
-        result[:filter_type]
-        ).to eq(:string)
-    end
-
-    it "returns nil for nil rule" do
-        expect(
-            described_class.call(nil)
-        ).to be_nil
-    end
-
-    it "symbolizes rule keys" do
-        result = described_class.call(
-            "type" => :single,
-            "filter_type" => :string,
-            "dbcolumn" => :stage
-        )
-
-        expect(result[:type]).to eq(:single)
-        expect(result[:filter_type]).to eq(:string)
-        expect(result[:dbcolumn]).to eq(:stage)
-    end
+    expect(result[:type]).to eq(:single)
+    expect(result[:filter_type]).to eq(:string)
+    expect(result[:dbcolumn]).to eq(:stage)
+  end
 end

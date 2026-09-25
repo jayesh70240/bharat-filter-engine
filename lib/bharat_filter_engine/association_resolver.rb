@@ -7,7 +7,7 @@ module BharatFilterEngine
     end
 
     def resolve(path)
-      parts = path.to_s.split("__").map(&:to_sym)
+      parts = path.to_s.split('__').map(&:to_sym)
 
       return nil if parts.empty?
 
@@ -58,13 +58,13 @@ module BharatFilterEngine
       # lead -> client -> name
       # ----------------------------------------
 
-      parts = field.split("__")
+      parts = field.split('__')
 
       column =
         parts.pop
 
       association_path =
-        parts.join("__")
+        parts.join('__')
 
       result =
         resolve(association_path)
