@@ -2,7 +2,7 @@
 
 module BharatFilterEngine
   class SearchBuilder
-    LIKE_ESCAPE_CHAR = "\\"
+    LIKE_ESCAPE_CHAR = '\\'
 
     def initialize(scope:, allowed_columns:)
       @scope = scope
@@ -13,7 +13,7 @@ module BharatFilterEngine
          @allowed_columns.none? { |field| valid_field?(field) }
 
         raise InvalidConfigurationError,
-              "BharatFilterEngine: none of the configured allowed_columns " \
+              'BharatFilterEngine: none of the configured allowed_columns ' \
               "#{@allowed_columns.inspect} could be resolved on " \
               "#{@scope.klass}. Check `dbcolumns:` in your filter config."
       end
@@ -141,8 +141,8 @@ module BharatFilterEngine
 
       condition =
         result[:klass]
-          .arel_table[result[:column]]
-          .matches(query, LIKE_ESCAPE_CHAR)
+        .arel_table[result[:column]]
+        .matches(query, LIKE_ESCAPE_CHAR)
 
       [joined_scope, condition]
     end

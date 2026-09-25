@@ -2,9 +2,9 @@
 
 module BharatFilterEngine
   class DynamicFilterValues
-    LIKE_ESCAPE_CHAR = "\\"
+    LIKE_ESCAPE_CHAR = '\\'
 
-    def initialize(scope:, model: nil, field:, term: nil, limit: nil)
+    def initialize(scope:, field:, model: nil, term: nil, limit: nil)
       @scope = scope
       @model = model || scope.klass
       @field = field.to_s
@@ -29,7 +29,7 @@ module BharatFilterEngine
       scoped =
         scoped.where(
           arel_column.not_eq(nil).and(
-            arel_column.not_eq("")
+            arel_column.not_eq('')
           )
         )
 

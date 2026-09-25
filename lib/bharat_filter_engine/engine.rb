@@ -33,11 +33,11 @@ module BharatFilterEngine
 
         term =
           params[:filter_term] ||
-          params["filter_term"]
+          params['filter_term']
 
         limit =
           params[:filter_limit] ||
-          params["filter_limit"]
+          params['filter_limit']
 
         DynamicFilterValues.new(
           scope: scope,
@@ -112,10 +112,10 @@ module BharatFilterEngine
 
       unless result
         raise InvalidAssociationError,
-              "BharatFilterEngine: could not resolve association " \
+              'BharatFilterEngine: could not resolve association ' \
               "#{association.inspect} configured for filter " \
               "#{rule[:dbcolumn].inspect}. Check the `association:` key " \
-              "in your filter config."
+              'in your filter config.'
       end
 
       joined_scope =
@@ -281,13 +281,13 @@ module BharatFilterEngine
       if present
         scope.where(
           arel_column.not_eq(nil).and(
-            arel_column.not_eq("")
+            arel_column.not_eq('')
           )
         )
       else
         scope.where(
           arel_column.eq(nil).or(
-            arel_column.eq("")
+            arel_column.eq('')
           )
         )
       end
@@ -333,7 +333,7 @@ module BharatFilterEngine
       scope.where(Arel::Nodes::Not.new(predicate))
     end
 
-    NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/.freeze
+    NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
 
     def apply_numeric_filter(
       scope,
@@ -357,7 +357,7 @@ module BharatFilterEngine
       when :gte
         return scope unless numeric_string?(value)
 
-        scope.where("#{qualified_column} >= ?",cast_numeric(value, caster))
+        scope.where("#{qualified_column} >= ?", cast_numeric(value, caster))
 
       when :lte
         return scope unless numeric_string?(value)
@@ -394,13 +394,15 @@ module BharatFilterEngine
       return scope unless
         raw_from.present? || raw_to.present?
 
-      from =
-        cast_numeric(raw_from, caster) if
-          raw_from.present? && numeric_string?(raw_from)
+      if raw_from.present? && numeric_string?(raw_from)
+        from =
+          cast_numeric(raw_from, caster)
+      end
 
-      to =
-        cast_numeric(raw_to, caster) if
-          raw_to.present? && numeric_string?(raw_to)
+      if raw_to.present? && numeric_string?(raw_to)
+        to =
+          cast_numeric(raw_to, caster)
+      end
 
       return scope unless from || to
 
@@ -445,17 +447,21 @@ module BharatFilterEngine
       return scope unless
         raw_from.present? || raw_to.present?
 
-      from =
-        normalize_date(
-          raw_from,
-          :start
-        ) if raw_from.present?
+      if raw_from.present?
+        from =
+          normalize_date(
+            raw_from,
+            :start
+          )
+      end
 
-      to =
-        normalize_date(
-          raw_to,
-          :end
-        ) if raw_to.present?
+      if raw_to.present?
+        to =
+          normalize_date(
+            raw_to,
+            :end
+          )
+      end
 
       if from.present? && to.present?
 
@@ -484,8 +490,8 @@ module BharatFilterEngine
 
       when Hash
         [
-          value[:from] || value["from"],
-          value[:to] || value["to"]
+          value[:from] || value['from'],
+          value[:to] || value['to']
         ]
 
       when Array
@@ -493,7 +499,7 @@ module BharatFilterEngine
 
       when String
         value
-          .split(",")
+          .split(',')
           .map(&:strip)
 
       else
@@ -561,4 +567,3 @@ module BharatFilterEngine
     end
   end
 end
-

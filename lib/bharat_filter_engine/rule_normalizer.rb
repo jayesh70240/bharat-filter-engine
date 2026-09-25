@@ -49,25 +49,25 @@ module BharatFilterEngine
 
       if rule[:type] == :nested && rule[:association].blank?
         raise InvalidConfigurationError,
-              "BharatFilterEngine: a `type: :nested` filter rule requires " \
-              "an `association:` key."
+              'BharatFilterEngine: a `type: :nested` filter rule requires ' \
+              'an `association:` key.'
       end
 
       if rule[:type] == :nested && filter_type == :search
         raise InvalidConfigurationError,
-              "BharatFilterEngine: `filter_type: :search` does not support " \
-              "`type: :nested` -- use `__` notation inside `dbcolumns:` instead."
+              'BharatFilterEngine: `filter_type: :search` does not support ' \
+              '`type: :nested` -- use `__` notation inside `dbcolumns:` instead.'
       end
 
       if filter_type == :search
         if Array(rule[:dbcolumns]).empty?
           raise InvalidConfigurationError,
-                "BharatFilterEngine: a `filter_type: :search` rule requires " \
-                "a non-empty `dbcolumns:` array."
+                'BharatFilterEngine: a `filter_type: :search` rule requires ' \
+                'a non-empty `dbcolumns:` array.'
         end
       elsif rule[:dbcolumn].blank?
         raise InvalidConfigurationError,
-              "BharatFilterEngine: filter rule requires a `dbcolumn:` key."
+              'BharatFilterEngine: filter rule requires a `dbcolumn:` key.'
       end
 
       validate_range_type!(rule, filter_type)
@@ -87,7 +87,7 @@ module BharatFilterEngine
       return if NUMERIC_FILTER_TYPES.include?(filter_type)
 
       raise InvalidConfigurationError,
-            "BharatFilterEngine: `range_type:` is only supported for " \
+            'BharatFilterEngine: `range_type:` is only supported for ' \
             "#{NUMERIC_FILTER_TYPES.inspect} filters, got #{filter_type.inspect}."
     end
     private_class_method :validate_range_type!
@@ -97,7 +97,7 @@ module BharatFilterEngine
       return if rule[:range_type].blank? && !NEGATE_UNSUPPORTED_FILTER_TYPES.include?(filter_type)
 
       raise InvalidConfigurationError,
-            "BharatFilterEngine: `negate: true` is not supported together " \
+            'BharatFilterEngine: `negate: true` is not supported together ' \
             "with `range_type:`, or with #{NEGATE_UNSUPPORTED_FILTER_TYPES.inspect} filters."
     end
     private_class_method :validate_negate!
