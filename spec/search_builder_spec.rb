@@ -152,4 +152,141 @@ RSpec.describe BharatFilterEngine::SearchBuilder do
 
     expect(result).to be_empty
   end
+
+  it "supports searching the id column as text" do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: [:id]
+      ).apply(
+        "id=#{sale.id}"
+      )
+
+    expect(result).to contain_exactly(sale)
+  end
+
+  it "handles a value that itself contains an '=' sign" do
+    sale_with_url = Sale.create!(
+      stage: "https://example.com?x=1"
+    )
+
+    result =
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: [:stage]
+      ).apply(
+        "stage=https://example.com?x=1"
+      )
+
+    expect(result).to contain_exactly(sale_with_url)
+  end
+
+  it "skips a whitespace-only expression value" do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: [:stage]
+      ).apply(
+        "stage=   "
+      )
+
+    # every expression in the (only) AND group is blank/skipped, so
+    # the group can never match anything
+    expect(result).to be_empty
+  end
+
+  it "returns the scope unchanged when allowed_columns is empty" do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: []
+      ).apply("anything")
+
+    expect(result).to contain_exactly(sale)
+  end
+
+  it "raises when none of the allowed_columns can be resolved" do
+    expect {
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: [
+          :totally_not_a_column,
+          :"also__not__real"
+        ]
+      )
+    }.to raise_error(BharatFilterEngine::InvalidConfigurationError)
+  end
+
+  it "does not raise when only some allowed_columns are invalid" do
+    expect {
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: [
+          :stage,
+          :totally_not_a_column
+        ]
+      )
+    }.not_to raise_error
+  end
+
+  it "reuses a single AssociationResolver across a whole search" do
+    allow(BharatFilterEngine::AssociationResolver)
+      .to receive(:new)
+      .and_call_original
+
+    described_class.new(
+      scope: Sale.all,
+      allowed_columns: [
+        :"lead__source",
+        :"lead__client__name"
+      ]
+    ).apply(
+      "lead__source=google&lead__client__name=John"
+    )
+
+    expect(BharatFilterEngine::AssociationResolver)
+      .to have_received(:new)
+      .once
+  end
+
+  describe "LIKE wildcard escaping" do
+    it "treats a literal underscore as a literal character, not a wildcard" do
+      match = Sale.create!(stage: "sale_2026")
+      Sale.create!(stage: "saleX2026")
+
+      result =
+        described_class.new(
+          scope: Sale.all,
+          allowed_columns: [:stage]
+        ).apply("sale_2026")
+
+      expect(result).to contain_exactly(match)
+    end
+
+    it "treats a literal percent sign as a literal character, not a wildcard" do
+      match = Sale.create!(stage: "50%off")
+      Sale.create!(stage: "50xoff")
+
+      result =
+        described_class.new(
+          scope: Sale.all,
+          allowed_columns: [:stage]
+        ).apply("50%off")
+
+      expect(result).to contain_exactly(match)
+    end
+
+    it "escapes wildcards in field-based search too" do
+      match = Sale.create!(stage: "sale_2026")
+      Sale.create!(stage: "saleX2026")
+
+      result =
+        described_class.new(
+          scope: Sale.all,
+          allowed_columns: [:stage]
+        ).apply("stage=sale_2026")
+
+      expect(result).to contain_exactly(match)
+    end
+  end
 end

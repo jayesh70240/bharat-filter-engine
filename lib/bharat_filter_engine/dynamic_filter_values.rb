@@ -2,10 +2,14 @@
 
 module BharatFilterEngine
   class DynamicFilterValues
-    def initialize(scope:, field:, model: nil)
+    LIKE_ESCAPE_CHAR = "\\"
+
+    def initialize(scope:, model: nil, field:, term: nil, limit: nil)
       @scope = scope
       @model = model || scope.klass
       @field = field.to_s
+      @term = term.presence
+      @limit = limit.presence&.to_i
     end
 
     def call
@@ -20,20 +24,32 @@ module BharatFilterEngine
           result[:associations]
         )
 
-      column = result[:column]
-      nested = result[:associations].present?
+      arel_column = result[:klass].arel_table[result[:column]]
 
-      not_condition =
-        nested ? { result[:table_name] => { column => [nil, ''] } } : { column => [nil, ''] }
+      scoped =
+        scoped.where(
+          arel_column.not_eq(nil).and(
+            arel_column.not_eq("")
+          )
+        )
 
-      qualified_column =
-        nested ? Arel.sql("#{result[:table_name]}.#{column}") : column
+      scoped = apply_term(scoped, arel_column) if @term
 
-      scoped
-        .where.not(not_condition)
-        .distinct
-        .order(qualified_column)
-        .pluck(qualified_column)
+      scoped = scoped.distinct.order(arel_column)
+      scoped = scoped.limit(@limit) if @limit&.positive?
+
+      scoped.pluck(arel_column)
+    end
+
+    private
+
+    def apply_term(scoped, arel_column)
+      escaped =
+        @term.to_s.gsub(/[\\%_]/) { |char| "#{LIKE_ESCAPE_CHAR}#{char}" }
+
+      scoped.where(
+        arel_column.matches("%#{escaped}%", LIKE_ESCAPE_CHAR)
+      )
     end
   end
 end

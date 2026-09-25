@@ -61,6 +61,20 @@ RSpec.describe BharatFilterEngine::AssociationResolver do
 
       expect(result).to be_nil
     end
+
+    it "returns nil when an intermediate association in a multi-level path is invalid" do
+      result = resolver.resolve(
+        "lead__not_a_real_association__name"
+      )
+
+      expect(result).to be_nil
+    end
+
+    it "returns nil for a blank path" do
+      result = resolver.resolve("")
+
+      expect(result).to be_nil
+    end
   end
 
   describe '#resolve_column' do
@@ -115,6 +129,15 @@ RSpec.describe BharatFilterEngine::AssociationResolver do
       result =
         resolver.resolve_column(
           'lead__invalid'
+        )
+
+      expect(result).to be_nil
+    end
+
+    it "returns nil when an intermediate association is invalid" do
+      result =
+        resolver.resolve_column(
+          "lead__not_a_real_association__name"
         )
 
       expect(result).to be_nil
