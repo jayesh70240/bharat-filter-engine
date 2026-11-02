@@ -1274,6 +1274,352 @@ RSpec.describe BharatFilterEngine::Engine do
 
         expect(result).to contain_exactly(sale)
       end
+
+      it 'keeps rows where the column is NULL (string)' do
+        excluded = Sale.create!(stage: 'qualified')
+        kept = Sale.create!(stage: 'new')
+        kept_nil = Sale.create!(stage: nil)
+
+        config = {
+          stage: {
+            type: :single,
+            filter_type: :string,
+            dbcolumn: :stage,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { stage: 'qualified' }
+        )
+
+        expect(result).to contain_exactly(kept, kept_nil)
+        expect(result).not_to include(excluded)
+      end
+
+      it 'keeps rows where the column is NULL (array)' do
+        Sale.create!(approval_status: 'rejected')
+        kept = Sale.create!(approval_status: 'approved')
+        kept_nil = Sale.create!(approval_status: nil)
+
+        config = {
+          status: {
+            type: :single,
+            filter_type: :array,
+            dbcolumn: :approval_status,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { status: ['rejected'] }
+        )
+
+        expect(result).to contain_exactly(kept, kept_nil)
+      end
+
+      it 'keeps rows where the column is NULL (boolean)' do
+        Sale.create!(active: true)
+        kept_false = Sale.create!(active: false)
+        kept_nil = Sale.create!(active: nil)
+
+        config = {
+          active: {
+            type: :single,
+            filter_type: :boolean,
+            dbcolumn: :active,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { active: 'true' }
+        )
+
+        expect(result).to contain_exactly(kept_false, kept_nil)
+      end
+
+      it 'keeps rows where the column is NULL (integer)' do
+        Sale.create!(amount: 500)
+        kept = Sale.create!(amount: 100)
+        kept_nil = Sale.create!(amount: nil)
+
+        config = {
+          amount: {
+            type: :single,
+            filter_type: :integer,
+            dbcolumn: :amount,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { amount: '500' }
+        )
+
+        expect(result).to contain_exactly(kept, kept_nil)
+      end
+
+      it 'keeps rows where the column is NULL (float)' do
+        Sale.create!(conversion_rate: 1.5)
+        kept = Sale.create!(conversion_rate: 2.5)
+        kept_nil = Sale.create!(conversion_rate: nil)
+
+        config = {
+          conversion_rate: {
+            type: :single,
+            filter_type: :float,
+            dbcolumn: :conversion_rate,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { conversion_rate: '1.5' }
+        )
+
+        expect(result).to contain_exactly(kept, kept_nil)
+      end
+
+      it 'supports comma separated and JSON array values' do
+        Sale.create!(approval_status: 'rejected')
+        Sale.create!(approval_status: 'pending')
+        kept = Sale.create!(approval_status: 'approved')
+
+        config = {
+          status: {
+            type: :single,
+            filter_type: :array,
+            dbcolumn: :approval_status,
+            negate: true
+          }
+        }
+
+        comma = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { status: 'rejected,pending' }
+        )
+
+        json = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { status: '["rejected","pending"]' }
+        )
+
+        expect(comma).to contain_exactly(kept)
+        expect(json).to contain_exactly(kept)
+      end
+
+      it 'ignores a non-numeric value instead of excluding zero' do
+        sale_zero = Sale.create!(amount: 0)
+        sale_five = Sale.create!(amount: 5)
+
+        config = {
+          amount: {
+            type: :single,
+            filter_type: :integer,
+            dbcolumn: :amount,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { amount: 'abc' }
+        )
+
+        expect(result).to contain_exactly(sale_zero, sale_five)
+      end
+
+      # --- nested negate: sales without an association must be kept
+
+      it 'keeps sales without a lead and sales whose lead column is NULL (nested)' do
+        client = Client.create!(name: 'John')
+
+        excluded = Sale.create!(
+          lead: Lead.create!(source: 'google', client: client)
+        )
+
+        kept_referral = Sale.create!(
+          lead: Lead.create!(source: 'referral', client: client)
+        )
+
+        kept_null_source = Sale.create!(
+          lead: Lead.create!(source: nil, client: client)
+        )
+
+        kept_no_lead = Sale.create!(lead: nil)
+
+        config = {
+          lead_source: {
+            type: :nested,
+            filter_type: :array,
+            association: :lead,
+            dbcolumn: :source,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { lead_source: ['google'] }
+        )
+
+        expect(result).to contain_exactly(
+          kept_referral,
+          kept_null_source,
+          kept_no_lead
+        )
+        expect(result).not_to include(excluded)
+      end
+
+      it 'excludes a has_many parent when ANY child matches (nested)' do
+        client = Client.create!(name: 'John')
+
+        bad_parent = Lead.create!(source: 'a', client: client)
+        good_parent = Lead.create!(source: 'b', client: client)
+        childless = Lead.create!(source: 'c', client: client)
+
+        Sale.create!(lead: bad_parent, stage: 'bad')
+        Sale.create!(lead: bad_parent, stage: 'ok')
+        Sale.create!(lead: good_parent, stage: 'ok')
+
+        config = {
+          sale_stage: {
+            type: :nested,
+            filter_type: :string,
+            association: :sales,
+            dbcolumn: :stage,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Lead.all,
+          config: config,
+          params: { sale_stage: 'bad' }
+        )
+
+        expect(result).to contain_exactly(good_parent, childless)
+      end
+
+      it 'does not return duplicate rows (nested)' do
+        client = Client.create!(name: 'John')
+        lead = Lead.create!(source: 'referral', client: client)
+
+        Sale.create!(lead: lead)
+        Sale.create!(lead: lead)
+
+        config = {
+          lead_source: {
+            type: :nested,
+            filter_type: :string,
+            association: :lead,
+            dbcolumn: :source,
+            negate: true
+          }
+        }
+
+        ids = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { lead_source: 'google' }
+        ).pluck(:id)
+
+        expect(ids).to eq(ids.uniq)
+        expect(ids.length).to eq(2)
+      end
+
+      it 'combines with other filters (AND)' do
+        client = Client.create!(name: 'John')
+        google = Lead.create!(source: 'google', client: client)
+        referral = Lead.create!(source: 'referral', client: client)
+
+        kept = Sale.create!(lead: referral, approval_status: 'pending', stage: 'hot')
+        Sale.create!(lead: google, approval_status: 'pending', stage: 'hot')
+        Sale.create!(lead: referral, approval_status: 'rejected', stage: 'hot')
+        Sale.create!(lead: referral, approval_status: 'pending', stage: 'cold')
+
+        config = {
+          status: {
+            type: :single,
+            filter_type: :array,
+            dbcolumn: :approval_status,
+            negate: true
+          },
+
+          lead_source: {
+            type: :nested,
+            filter_type: :string,
+            association: :lead,
+            dbcolumn: :source,
+            negate: true
+          },
+
+          stage: {
+            type: :single,
+            filter_type: :string,
+            dbcolumn: :stage
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: {
+            status: ['rejected'],
+            lead_source: 'google',
+            stage: 'hot'
+          }
+        )
+
+        expect(result).to contain_exactly(kept)
+      end
+
+      it 'works on a scope that already has a join and an ORDER BY' do
+        client = Client.create!(name: 'John')
+
+        kept = Sale.create!(
+          lead: Lead.create!(source: 'referral', client: client),
+          amount: 1
+        )
+
+        Sale.create!(
+          lead: Lead.create!(source: 'google', client: client),
+          amount: 2
+        )
+
+        config = {
+          lead_source: {
+            type: :nested,
+            filter_type: :string,
+            association: :lead,
+            dbcolumn: :source,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.joins(:lead).order(amount: :desc),
+          config: config,
+          params: { lead_source: 'google' }
+        )
+
+        expect(result).to contain_exactly(kept)
+      end
     end
 
     describe 'presence filter' do
