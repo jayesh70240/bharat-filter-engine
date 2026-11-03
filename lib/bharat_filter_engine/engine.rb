@@ -99,9 +99,16 @@ module BharatFilterEngine
     end
 
     def apply_nested_filter(scope, rule, value)
-      association = rule[:association]
-      resolver = AssociationResolver.new(scope)
-      result = resolver.resolve(association)
+      association =
+        rule[:association]
+
+      resolver =
+        AssociationResolver.new(scope)
+
+      result =
+        resolver.resolve(
+          association
+        )
 
       unless result
         raise InvalidAssociationError,
@@ -111,40 +118,97 @@ module BharatFilterEngine
               'in your filter config.'
       end
 
-      if rule[:negate]
-        return apply_negated_nested_filter(scope, rule, value, resolver, result)
-      end
-      joined_scope = resolver.join(scope, result[:associations])
-      apply_filter_by_type( joined_scope, rule, value, table_name: result[:table_name]).distinct
+      joined_scope =
+        resolver.join(
+          scope,
+          result[:associations]
+        )
+
+      apply_filter_by_type(
+        joined_scope,
+        rule,
+        value,
+        table_name: result[:table_name]
+      ).distinct
     end
 
-    def apply_filter_by_type(scope, rule, value, table_name: nil)
-      column = rule[:dbcolumn]
+    def apply_filter_by_type(
+      scope,
+      rule,
+      value,
+      table_name: nil
+    )
+      column =
+        rule[:dbcolumn]
+
       case rule[:filter_type]
 
       when :array
-        apply_array_filter(scope, column, value, table_name, negate: rule[:negate])
+        apply_array_filter(
+          scope,
+          column,
+          value,
+          table_name,
+          negate: rule[:negate]
+        )
 
       when :boolean
-        apply_boolean_filter(scope, column, value, table_name, negate: rule[:negate])
+        apply_boolean_filter(
+          scope,
+          column,
+          value,
+          table_name,
+          negate: rule[:negate]
+        )
 
       when :integer
-        apply_numeric_filter(scope, rule, value, :to_i, table_name: table_name)
+        apply_numeric_filter(
+          scope,
+          rule,
+          value,
+          :to_i,
+          table_name: table_name
+        )
 
       when :float
-        apply_numeric_filter(scope, rule, value, :to_f, table_name: table_name)
+        apply_numeric_filter(
+          scope,
+          rule,
+          value,
+          :to_f,
+          table_name: table_name
+        )
 
       when :string
-        apply_string_filter(scope, column, value, table_name, negate: rule[:negate])
+        apply_string_filter(
+          scope,
+          column,
+          value,
+          table_name,
+          negate: rule[:negate]
+        )
 
       when :daterange
-        apply_date_range_filter(scope,rule,value,table_name: table_name)
+        apply_date_range_filter(
+          scope,
+          rule,
+          value,
+          table_name: table_name
+        )
 
       when :presence
-        apply_presence_filter(scope,column,value,table_name)
+        apply_presence_filter(
+          scope,
+          column,
+          value,
+          table_name
+        )
 
       when :search
-        SearchBuilder.new(scope: scope,allowed_columns: rule[:dbcolumns]).apply(value)
+        SearchBuilder.new(
+          scope: scope,
+          allowed_columns: rule[:dbcolumns]
+        ).apply(value)
 
       else
         scope
@@ -230,30 +294,43 @@ module BharatFilterEngine
     end
 
     def apply_condition(scope, column, value, table_name, negate: false)
-      unless negate
-        condition = table_name ? { table_name => { column => value } } : { column => value }
-        return scope.where(condition)
+      if negate && value.is_a?(Array)
+        return apply_negated_array_condition(
+          scope,
+          column,
+          value,
+          table_name
+        )
       end
 
-      attribute = scope.klass.arel_table[column]
-      predicate = Arel::Nodes::Not.new(equality_node(attribute, value))
-      predicate = predicate.or(attribute.eq(nil)) unless includes_null?(value)
-      scope.where(predicate)
+      condition =
+        if table_name
+          { table_name => { column => value } }
+        else
+          { column => value }
+        end
+
+      negate ? scope.where.not(condition) : scope.where(condition)
     end
 
-    def apply_negated_nested_filter(scope, rule, value, resolver, result)
-      base_klass = scope.klass
+    def apply_negated_array_condition(scope, column, values, table_name)
+      arel_column =
+        if table_name
+          Arel::Table.new(table_name)[column]
+        else
+          scope.klass.arel_table[column]
+        end
 
-      matching = apply_filter_by_type(
-        resolver.join(base_klass.unscoped, result[:associations]),
-        rule.merge(negate: false),
-        value,
-        table_name: result[:table_name]
-      )
+      membership = arel_column.in(values.compact)
 
-      primary_key = base_klass.primary_key
+      predicate =
+        if values.include?(nil)
+          arel_column.eq(nil).or(membership)
+        else
+          membership
+        end
 
-      scope.where.not(primary_key => matching.select(base_klass.arel_table[primary_key]))
+      scope.where(Arel::Nodes::Not.new(predicate))
     end
 
     NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
@@ -487,17 +564,6 @@ module BharatFilterEngine
 
         value
       end
-    end
-
-    def equality_node(attribute, value)
-      return attribute.eq(value) unless value.is_a?(Array)
-
-      node = attribute.in(value.compact)
-      value.include?(nil) ? node.or(attribute.eq(nil)) : node
-    end
-
-    def includes_null?(value)
-      value.nil? || (value.is_a?(Array) && value.include?(nil))
     end
   end
 end
