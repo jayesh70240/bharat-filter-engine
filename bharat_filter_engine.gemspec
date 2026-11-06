@@ -48,6 +48,7 @@ Gem::Specification.new do |spec|
       'https://github.com/jayesh70240/bharat-filter-engine/blob/main/CHANGELOG.md',
 
     'bug_tracker_uri' =>
-      'https://github.com/jayesh70240/bharat-filter-engine/issues'
+      'https://github.com/jayesh70240/bharat-filter-engine/issues',
+    'rubygems_mfa_required' => 'true'
   }
 end
