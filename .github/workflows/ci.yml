@@ -41,7 +41,7 @@ jobs:
           require 'yaml'
 
           compatibility = YAML.load_file('gemfiles/compatibility.yml')
-          files = Dir.glob('gemfiles/ar_*.gemfile')
+          files = Dir.glob('gemfiles/ar_[0-9]*_[0-9]*.gemfile')
 
           matrix = files.flat_map do |file|
             series = File.basename(file).delete_prefix('ar_').delete_suffix('.gemfile').tr('_', '.')
