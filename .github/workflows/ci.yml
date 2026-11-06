@@ -29,36 +29,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Generate matrix from available Gemfiles
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      - name: Generate dynamic compatibility matrix
         id: generate
         run: |
           ruby <<'RUBY'
           require 'json'
+          require 'yaml'
 
-          compatibility = {
-            '6.1' => %w[3.0 3.1 3.2],
-            '7.0' => %w[3.0 3.1 3.2],
-            '7.1' => %w[3.0 3.1 3.2 3.3],
-            '7.2' => %w[3.1 3.2 3.3 3.4],
-            '8.0' => %w[3.2 3.3 3.4],
-            '8.1' => %w[3.2 3.3 3.4]
-          }
-
-          files = Dir.glob('gemfiles/ar_[0-9]*_[0-9]*.gemfile')
+          compatibility = YAML.load_file('gemfiles/compatibility.yml')
+          files = Dir.glob('gemfiles/ar_*.gemfile')
 
           matrix = files.flat_map do |file|
             series = File.basename(file).delete_prefix('ar_').delete_suffix('.gemfile').tr('_', '.')
 
             rubies = compatibility[series]
 
-            unless rubies
-              major = series.split('.').first
-              previous = compatibility.keys
-                .select { |version| version.split('.').first == major }
-                .max_by { |version| Gem::Version.new(version) }
-
-              rubies = compatibility[previous] || ['3.4']
-            end
+            abort "Missing compatibility for Rails #{series}" unless rubies
 
             rubies.map do |ruby|
               {
@@ -101,11 +91,11 @@ jobs:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
 
-      - name: Run specs
+      - name: Run RSpec compatibility tests
         run: bundle exec rspec
 
-  default-gemfile:
-    name: Default Gemfile (Ruby 3.3)
+  unit-tests:
+    name: RSpec Unit Tests (Ruby 3.3)
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -119,7 +109,8 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      - run: bundle exec rspec
+      - name: Run RSpec
+        run: bundle exec rspec spec
 
   build:
     name: Build and smoke-test gem
@@ -166,7 +157,8 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      - run: bundle exec rubocop
+      - name: Run RuboCop
+        run: bundle exec rubocop
 
   edge:
     name: Rails main (allowed to fail)
@@ -188,18 +180,19 @@ jobs:
           ruby-version: '3.4'
           bundler-cache: true
 
-      - run: bundle exec rspec
+      - name: Run edge specs
+        run: bundle exec rspec
 
   ci-success:
     name: CI Success
     if: always()
-    needs: [matrix, test, default-gemfile, build]
+    needs: [matrix, test, unit-tests, build]
 
     runs-on: ubuntu-latest
 
     steps:
       - name: Check required jobs
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
         run: exit 1
 
       - run: echo "All required jobs passed."
