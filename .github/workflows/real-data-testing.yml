@@ -11,7 +11,7 @@ permissions:
 jobs:
   integration:
     if: github.event.label.name == 'Real-data-testing'
-    uses: jayesh70240/bfe-testing/.github/workflows/integration.yml@main
+    uses: jayesh70240/bfe-testing/.github/workflows/integration.yml@development
     with:
       gem_repository: ${{ github.event.pull_request.head.repo.full_name }}
       gem_ref: ${{ github.event.pull_request.head.sha }}
