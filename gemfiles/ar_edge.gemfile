@@ -12,6 +12,6 @@ end
 
 gem 'sqlite3', '>= 2.1'
 
+gem 'database_cleaner-active_record'
 gem 'rake'
 gem 'rspec'
-gem 'database_cleaner-active_record'
