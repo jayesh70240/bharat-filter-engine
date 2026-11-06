@@ -38,7 +38,7 @@ end
 
 puts "OK: tag #{tag} matches gem version #{gem_version} (prerelease=#{gem_version.prerelease?})"
 
-if (out = ENV['GITHUB_OUTPUT'])
+if (out = ENV.fetch('GITHUB_OUTPUT', nil))
   File.open(out, 'a') do |f|
     f.puts "prerelease=#{gem_version.prerelease?}"
     f.puts "version=#{gem_version}"
