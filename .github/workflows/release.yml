@@ -1,0 +1,94 @@
+name: Release (CD)
+
+# Publishes the gem to RubyGems and creates a GitHub Release when you push a
+# version tag that EXACTLY matches lib/bharat_filter_engine/version.rb,
+# e.g. VERSION '0.2.0pre' -> tag v0.2.0pre (a hyphen like v0.2.0-pre is rejected):
+#
+#   git tag v0.2.0pre && git push origin v0.2.0pre
+#
+# Only runs on the upstream repository, never on forks.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify tag and run tests
+    if: github.repository == 'jayesh70240/bharat-filter-engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Tag must match lib/bharat_filter_engine/version.rb
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: ruby script/verify_release_tag.rb "$TAG"
+      - name: Run specs
+        run: bundle exec rspec
+      - name: Build gem
+        run: gem build bharat_filter_engine.gemspec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-gem
+          path: bharat_filter_engine-*.gem
+          if-no-files-found: error
+
+  publish:
+    name: Publish to RubyGems
+    needs: verify
+    if: github.repository == 'jayesh70240/bharat-filter-engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Create an environment named "rubygems" (Settings > Environments) and add
+    # required reviewers if you want a manual approval before every publish.
+    environment: rubygems
+    permissions:
+      id-token: write # RubyGems "trusted publishing" (OIDC) -- no API key stored
+      contents: write # lets release-gem push/verify the tag
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      # Official action: builds the gem and pushes it using OIDC.
+      # One-time setup on rubygems.org: gem > Trusted publishers > add
+      #   repo: jayesh70240/bharat-filter-engine, workflow: release.yml,
+      #   environment: rubygems
+      - uses: rubygems/release-gem@v1
+
+  github-release:
+    name: Create GitHub Release
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-gem
+      - name: Create release with the gem attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          flags=""
+          if [ "$PRERELEASE" = "true" ]; then flags="--prerelease"; fi
+          gh release create "$TAG" bharat_filter_engine-*.gem \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" --generate-notes $flags
