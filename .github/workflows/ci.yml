@@ -1,13 +1,6 @@
+
 name: CI
 
-# Runs for EVERYONE:
-#   * pull_request  -> PRs from forks AND from branches of this repo (upstream).
-#                      Fork PRs get a read-only token and no secrets, which is
-#                      safe because the test suite needs neither.
-#                      (We deliberately do NOT use pull_request_target.)
-#   * push          -> every branch pushed to this repo, and to a contributor's
-#                      own fork (so they get CI before opening a PR).
-#   * schedule      -> weekly, to catch breakage from new Rails/Ruby releases.
 on:
   push:
     branches: ['**']
@@ -15,146 +8,198 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    - cron: '0 3 * * 1' # Mondays 03:00 UTC (08:30 IST)
+    - cron: '0 3 * * 1'
 
 permissions:
   contents: read
 
-# A newer push to the same PR/branch cancels the older run.
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Ruby ${{ matrix.ruby }} / ${{ matrix.gemfile }}
+  matrix:
+    name: Generate Compatibility Matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}.gemfile
-    strategy:
-      fail-fast: false
-      matrix:
-        # Only combinations that the Rails versions officially support.
-        include:
-          - { ruby: '3.0', gemfile: ar_6_1 }
-          - { ruby: '3.0', gemfile: ar_7_0 }
-          - { ruby: '3.0', gemfile: ar_7_1 }
-          - { ruby: '3.1', gemfile: ar_6_1 }
-          - { ruby: '3.1', gemfile: ar_7_0 }
-          - { ruby: '3.1', gemfile: ar_7_1 }
-          - { ruby: '3.1', gemfile: ar_7_2 }
-          - { ruby: '3.2', gemfile: ar_6_1 }
-          - { ruby: '3.2', gemfile: ar_7_0 }
-          - { ruby: '3.2', gemfile: ar_7_1 }
-          - { ruby: '3.2', gemfile: ar_7_2 }
-          - { ruby: '3.2', gemfile: ar_8_0 }
-          - { ruby: '3.2', gemfile: ar_8_1 }
-          - { ruby: '3.3', gemfile: ar_7_1 }
-          - { ruby: '3.3', gemfile: ar_7_2 }
-          - { ruby: '3.3', gemfile: ar_8_0 }
-          - { ruby: '3.3', gemfile: ar_8_1 }
-          - { ruby: '3.4', gemfile: ar_7_2 }
-          - { ruby: '3.4', gemfile: ar_8_0 }
-          - { ruby: '3.4', gemfile: ar_8_1 }
+    outputs:
+      matrix: ${{ steps.generate.outputs.matrix }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
+      - name: Generate matrix from available Gemfiles
+        id: generate
+        run: |
+          ruby <<'RUBY'
+          require 'json'
+
+          compatibility = {
+            '6.1' => %w[3.0 3.1 3.2],
+            '7.0' => %w[3.0 3.1 3.2],
+            '7.1' => %w[3.0 3.1 3.2 3.3],
+            '7.2' => %w[3.1 3.2 3.3 3.4],
+            '8.0' => %w[3.2 3.3 3.4],
+            '8.1' => %w[3.2 3.3 3.4]
+          }
+
+          files = Dir.glob('gemfiles/ar_[0-9]*_[0-9]*.gemfile')
+
+          matrix = files.flat_map do |file|
+            series = File.basename(file).delete_prefix('ar_').delete_suffix('.gemfile').tr('_', '.')
+
+            rubies = compatibility[series]
+
+            unless rubies
+              major = series.split('.').first
+              previous = compatibility.keys
+                .select { |version| version.split('.').first == major }
+                .max_by { |version| Gem::Version.new(version) }
+
+              rubies = compatibility[previous] || ['3.4']
+            end
+
+            rubies.map do |ruby|
+              {
+                ruby: ruby,
+                gemfile: File.basename(file, '.gemfile')
+              }
+            end
+          end
+
+          abort 'No compatibility Gemfiles found' if matrix.empty?
+
+          puts "Generated #{matrix.size} combinations"
+
+          File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |output|
+            output.puts "matrix=#{JSON.generate(matrix)}"
+          end
+          RUBY
+
+  test:
+    name: Ruby ${{ matrix.ruby }} / ${{ matrix.gemfile }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}.gemfile
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
+
       - name: Run specs
         run: bundle exec rspec
 
-  # The repo's own Gemfile (what contributors get from a plain `bundle install`).
   default-gemfile:
     name: Default Gemfile (Ruby 3.3)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
           bundler-cache: true
-      - name: Run specs
-        run: bundle exec rspec
 
-  # Does the gem build, install and load on its own?
+      - run: bundle exec rspec
+
   build:
     name: Build and smoke-test gem
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
+
       - name: Build gem
         run: gem build bharat_filter_engine.gemspec
+
       - name: Install built gem and load it
         run: |
           gem install ./bharat_filter_engine-*.gem
           cd "$(mktemp -d)"
           ruby -e 'require "bharat_filter_engine"; puts "loaded bharat_filter_engine #{BharatFilterEngine::VERSION}"'
+
       - uses: actions/upload-artifact@v4
         with:
           name: gem
           path: bharat_filter_engine-*.gem
           retention-days: 7
 
-  # Style check. Non-blocking until the repo adds a .rubocop.yml and the
-  # existing code is cleaned up; flip continue-on-error to false after that.
   lint:
     name: RuboCop (non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 10
+
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
           bundler-cache: true
+
       - run: bundle exec rubocop
 
-  # Early warning against Rails main. Scheduled / manual only, may fail.
   edge:
     name: Rails main (allowed to fail)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 15
+
     env:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/ar_edge.gemfile
+
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
           bundler-cache: true
+
       - run: bundle exec rspec
 
-  # ONE required status check for branch protection: it is green only when
-  # every blocking job above is green, so you don't have to list 20 matrix
-  # jobs as "required".
   ci-success:
     name: CI Success
     if: always()
-    needs: [test, default-gemfile, build]
+    needs: [matrix, test, default-gemfile, build]
+
     runs-on: ubuntu-latest
+
     steps:
-      - name: Fail if any required job failed or was cancelled
+      - name: Check required jobs
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
+
       - run: echo "All required jobs passed."

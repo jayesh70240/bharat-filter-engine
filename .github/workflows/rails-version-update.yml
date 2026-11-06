@@ -1,0 +1,99 @@
+
+name: Rails Version Update
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-gemfile:
+    name: Detect New ActiveRecord Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+
+      - name: Detect latest stable ActiveRecord
+        id: detect
+        run: |
+          ruby <<'RUBY'
+          require 'net/http'
+          require 'json'
+          require 'rubygems'
+
+          uri = URI('https://rubygems.org/api/v1/versions/activerecord.json')
+          response = Net::HTTP.get_response(uri)
+
+          abort "RubyGems API failed: #{response.code}" unless response.is_a?(Net::HTTPSuccess)
+
+          versions = JSON.parse(response.body)
+
+          latest = versions
+            .reject { |version| version['prerelease'] }
+            .map { |version| Gem::Version.new(version['number']) }
+            .select { |version| version.segments.size >= 2 }
+            .max
+
+          abort 'No stable ActiveRecord version found' unless latest
+
+          series = latest.segments.first(2).join('.')
+          file = "gemfiles/ar_#{series.tr('.', '_')}.gemfile"
+
+          File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |output|
+            output.puts "version=#{latest}"
+            output.puts "series=#{series}"
+            output.puts "file=#{file}"
+            output.puts "created=#{!File.exist?(file)}"
+          end
+
+          unless File.exist?(file)
+            File.write(file, <<~GEMFILE)
+              # frozen_string_literal: true
+
+              source 'https://rubygems.org'
+
+              gemspec path: '../'
+
+              gem 'activemodel', '~> #{series}.0'
+              gem 'activerecord', '~> #{series}.0'
+              gem 'activesupport', '~> #{series}.0'
+              gem 'sqlite3', '>= 2.1'
+
+              gem 'database_cleaner-active_record'
+              gem 'rake'
+              gem 'rspec'
+            GEMFILE
+
+            puts "Created #{file} for ActiveRecord #{latest}"
+          else
+            puts "#{file} already exists"
+          end
+          RUBY
+
+      - name: Create pull request
+        if: steps.detect.outputs.created == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.AUTO_PR_TOKEN }}
+          commit-message: "ci: add ActiveRecord ${{ steps.detect.outputs.series }} compatibility"
+          title: "CI: Add ActiveRecord ${{ steps.detect.outputs.series }} compatibility"
+          body: |
+            Automatically generated compatibility Gemfile.
+
+            - Latest stable ActiveRecord: ${{ steps.detect.outputs.version }}
+            - Generated file: `${{ steps.detect.outputs.file }}`
+
+            Dynamic CI matrix will test the new compatibility Gemfile.
+          branch: automation/active-record-${{ steps.detect.outputs.series }}
+          delete-branch: true
+          add-paths: ${{ steps.detect.outputs.file }}
