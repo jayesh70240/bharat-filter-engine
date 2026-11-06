@@ -18,23 +18,10 @@ module BharatFilterEngine
       result = resolver.resolve_column(@field)
       return nil unless result
 
-      scoped =
-        resolver.join(
-          @scope,
-          result[:associations]
-        )
-
+      scoped = resolver.join(@scope, result[:associations])
       arel_column = result[:klass].arel_table[result[:column]]
-
-      scoped =
-        scoped.where(
-          arel_column.not_eq(nil).and(
-            arel_column.not_eq('')
-          )
-        )
-
+      scoped = scoped.where(ColumnHelper.present_predicate(arel_column, result[:klass], result[:column]))
       scoped = apply_term(scoped, arel_column) if @term
-
       scoped = scoped.distinct.order(arel_column)
       scoped = scoped.limit(@limit) if @limit&.positive?
 
@@ -44,12 +31,8 @@ module BharatFilterEngine
     private
 
     def apply_term(scoped, arel_column)
-      escaped =
-        @term.to_s.gsub(/[\\%_]/) { |char| "#{LIKE_ESCAPE_CHAR}#{char}" }
-
-      scoped.where(
-        arel_column.matches("%#{escaped}%", LIKE_ESCAPE_CHAR)
-      )
+      escaped = @term.to_s.gsub(/[\\%_]/) { |char| "#{LIKE_ESCAPE_CHAR}#{char}" }
+      scoped.where(arel_column.matches("%#{escaped}%", LIKE_ESCAPE_CHAR))
     end
   end
 end

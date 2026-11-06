@@ -1356,6 +1356,78 @@ RSpec.describe BharatFilterEngine::Engine do
         expect(result).to contain_exactly(sale_with_org)
       end
     end
+
+    describe 'presence filter on non-string columns' do
+      def presence_config(column, **extra)
+        { has_value: { type: :single, filter_type: :presence, dbcolumn: column }.merge(extra) }
+      end
+
+      {
+        project_id: [1, 7],
+        amount: [0, 500],
+        conversion_rate: [0.0, 2.5],
+        actual_sale_date: [Time.utc(2013, 1, 1), Time.utc(2013, 6, 1)],
+        active: [false, true]
+      }.each do |column, (value_one, value_two)|
+        context "on the #{column} column" do
+          let!(:with_one) { Sale.create!(column => value_one) }
+          let!(:with_two) { Sale.create!(column => value_two) }
+          let!(:without)  { Sale.create!(column => nil) }
+
+          it 'returns only non-NULL rows when value is true' do
+            result = described_class.apply(
+              scope: Sale.all, config: presence_config(column), params: { has_value: 'true' }
+            )
+            expect(result).to contain_exactly(with_one, with_two)
+          end
+
+          it 'returns only NULL rows when value is false' do
+            result = described_class.apply(
+              scope: Sale.all, config: presence_config(column), params: { has_value: 'false' }
+            )
+            expect(result).to contain_exactly(without)
+          end
+        end
+      end
+
+      it 'treats a zero integer as present, not blank' do
+        zero = Sale.create!(amount: 0)
+        Sale.create!(amount: nil)
+
+        result = described_class.apply(
+          scope: Sale.all, config: presence_config(:amount), params: { has_value: 'true' }
+        )
+        expect(result).to contain_exactly(zero)
+      end
+
+      it 'works on a nested non-string (integer foreign key) column' do
+        client = Client.create!(name: 'John')
+        lead_with_client = Lead.create!(source: 'google', client: client)
+        lead_without_client = Lead.create!(source: 'referral', client: nil)
+        sale_with = Sale.create!(lead: lead_with_client)
+        sale_without = Sale.create!(lead: lead_without_client)
+
+        config = {
+          has_client: { type: :nested, filter_type: :presence, association: :lead, dbcolumn: :client_id }
+        }
+        present = described_class.apply(scope: Sale.all, config: config, params: { has_client: 'true' })
+        blank   = described_class.apply(scope: Sale.all, config: config, params: { has_client: 'false' })
+
+        expect(present).to contain_exactly(sale_with)
+        expect(blank).to contain_exactly(sale_without)
+      end
+
+      it 'still treats an empty string as blank on a string column' do
+        sale = Sale.create!(stage: 'qualified')
+        Sale.create!(stage: '')
+
+        result = described_class.apply(
+          scope: Sale.all, config: presence_config(:stage), params: { has_value: true }
+        )
+        expect(result).to contain_exactly(sale)
+      end
+    end
+
     describe 'invalid numeric input' do
       it 'ignores a non-numeric exact integer filter value' do
         sale = Sale.create!(amount: 500)

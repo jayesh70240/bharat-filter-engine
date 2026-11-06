@@ -132,6 +132,46 @@ RSpec.describe BharatFilterEngine::DynamicFilterValues do
     )
   end
 
+  it 'returns distinct values for an integer column' do
+    Sale.create!(project_id: 3)
+    Sale.create!(project_id: 1)
+    Sale.create!(project_id: 3)
+    Sale.create!(project_id: nil)
+
+    result = described_class.new(scope: Sale.all, field: 'project_id').call
+    expect(result).to eq([1, 3])
+  end
+
+  it 'keeps a zero value for a numeric column' do
+    Sale.create!(amount: 0)
+    Sale.create!(amount: 5)
+
+    result = described_class.new(scope: Sale.all, field: 'amount').call
+    expect(result).to eq([0, 5])
+  end
+
+  it 'returns distinct values for a datetime column' do
+    Sale.create!(actual_sale_date: Time.utc(2013, 1, 1))
+    Sale.create!(actual_sale_date: nil)
+
+    result = described_class.new(scope: Sale.all, field: 'actual_sale_date').call
+    expect(result.size).to eq(1)
+  end
+
+  it 'returns distinct values for a nested integer column' do
+    client = Client.create!(name: 'Nested Co')
+    lead = Lead.create!(source: 'web', client: client)
+    Sale.create!(lead: lead)
+    Sale.create!(lead: lead)
+    Sale.create!(lead: nil)
+
+    result = described_class.new(scope: Sale.all, field: 'lead__client_id').call
+    expected = Sale.joins(:lead).distinct.pluck('leads.client_id').compact.sort
+
+    expect(result).to include(client.id)
+    expect(result).to eq(expected)
+  end
+
   it 'filters values by a partial term' do
     Sale.create!(stage: 'closed')
 

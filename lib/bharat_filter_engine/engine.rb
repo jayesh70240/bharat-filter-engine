@@ -2,6 +2,7 @@
 
 module BharatFilterEngine
   class Engine
+    NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
     class << self
       def apply(scope:, config:, params:)
         new(
@@ -128,7 +129,8 @@ module BharatFilterEngine
         joined_scope,
         rule,
         value,
-        table_name: result[:table_name]
+        table_name: result[:table_name],
+        klass: result[:klass]
       ).distinct
     end
 
@@ -136,7 +138,8 @@ module BharatFilterEngine
       scope,
       rule,
       value,
-      table_name: nil
+      table_name: nil,
+      klass: nil
     )
       column =
         rule[:dbcolumn]
@@ -201,7 +204,8 @@ module BharatFilterEngine
           scope,
           column,
           value,
-          table_name
+          table_name,
+          klass: klass
         )
 
       when :search
@@ -268,28 +272,20 @@ module BharatFilterEngine
       )
     end
 
-    def apply_presence_filter(scope, column, value, table_name)
+    def apply_presence_filter(scope, column, value, table_name, klass: nil)
       present = ActiveModel::Type::Boolean.new.cast(value)
-
+      klass ||= scope.klass
       arel_column =
         if table_name
           Arel::Table.new(table_name)[column]
         else
-          scope.klass.arel_table[column]
+          klass.arel_table[column]
         end
 
       if present
-        scope.where(
-          arel_column.not_eq(nil).and(
-            arel_column.not_eq('')
-          )
-        )
+        scope.where(ColumnHelper.present_predicate(arel_column, klass, column))
       else
-        scope.where(
-          arel_column.eq(nil).or(
-            arel_column.eq('')
-          )
-        )
+        scope.where(ColumnHelper.blank_predicate(arel_column, klass, column))
       end
     end
 
@@ -332,8 +328,6 @@ module BharatFilterEngine
 
       scope.where(Arel::Nodes::Not.new(predicate))
     end
-
-    NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
 
     def apply_numeric_filter(
       scope,
