@@ -2,8 +2,7 @@ name: Real Data Testing
 
 on:
   pull_request:
-    types:
-      - labeled
+    types: [labeled]
 
 permissions:
   contents: read
@@ -12,12 +11,9 @@ permissions:
 jobs:
   integration:
     if: github.event.label.name == 'Real-data-testing'
-
-    uses: jayesh70240/bharat-filter-engine-testing/.github/workflows/integration.yml@main
-
+    uses: jayesh70240/bfe-testing/.github/workflows/integration.yml@development
     with:
       gem_repository: ${{ github.event.pull_request.head.repo.full_name }}
       gem_ref: ${{ github.event.pull_request.head.sha }}
-
     secrets:
       REMOTE_POSTGRES_URL: ${{ secrets.REMOTE_POSTGRES_URL }}
