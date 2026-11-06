@@ -2,6 +2,7 @@
 
 module BharatFilterEngine
   class Engine
+    NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
     class << self
       def apply(scope:, config:, params:)
         new(
@@ -327,8 +328,6 @@ module BharatFilterEngine
 
       scope.where(Arel::Nodes::Not.new(predicate))
     end
-
-    NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
 
     def apply_numeric_filter(
       scope,
