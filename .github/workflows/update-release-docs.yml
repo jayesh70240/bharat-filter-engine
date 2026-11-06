@@ -1,0 +1,117 @@
+
+name: Update Release Documentation (CD)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-docs:
+    name: Generate release documentation
+    if: github.repository == 'jayesh70240/bharat-filter-engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch release tags
+        run: git fetch origin '+refs/tags/*:refs/tags/*'
+
+      - name: Generate CHANGELOG and update README
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+
+          VERSION=$(git show "$TAG:lib/bharat_filter_engine/version.rb" | ruby -ne '
+            if $_ =~ /VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]/
+              puts $1
+              exit
+            end
+          ')
+
+          if [ -z "$VERSION" ]; then
+            echo "Unable to determine release version"
+            exit 1
+          fi
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            COMMITS=$(git log --no-merges --format='%s' "$PREVIOUS_TAG..$TAG" -- lib/)
+            OLD_VERSION="${PREVIOUS_TAG#v}"
+          else
+            COMMITS=$(git log --no-merges --format='%s' "$TAG" -- lib/)
+            OLD_VERSION=""
+          fi
+
+          if [ -z "$COMMITS" ]; then
+            echo "No changes in lib/. Skipping documentation update."
+            exit 0
+          fi
+
+          CHANGELOG_ENTRY=$(mktemp)
+
+          {
+            echo "## $VERSION"
+            echo
+            while IFS= read -r commit; do
+              [ -z "$commit" ] || echo "- $commit"
+            done <<< "$COMMITS"
+            echo
+          } > "$CHANGELOG_ENTRY"
+
+          if [ -f CHANGELOG.md ]; then
+            cat "$CHANGELOG.md" >> "$CHANGELOG_ENTRY"
+          fi
+
+          mv "$CHANGELOG_ENTRY" CHANGELOG.md
+
+          if [ -n "$OLD_VERSION" ]; then
+            OLD_VERSION="$OLD_VERSION" NEW_VERSION="$VERSION" ruby -e '
+              path = "README.md"
+              next unless File.exist?(path)
+
+              content = File.read(path)
+              updated = content.gsub(Regexp.new(Regexp.escape(ENV["OLD_VERSION"])), ENV["NEW_VERSION"])
+
+              File.write(path, updated) if content != updated
+            '
+          fi
+
+          echo "Documentation generated for $VERSION"
+
+      - name: Create documentation PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "docs: update release documentation for ${{ github.ref_name }}"
+          branch: docs/release-${{ github.ref_name }}
+          delete-branch: true
+          title: "docs: update release documentation (${{ github.ref_name }})"
+          body: |
+            ## Release Documentation Update
+
+            Automatically generated for `${{ github.ref_name }}`.
+
+            ### Changes
+            - Updated CHANGELOG.md using commits that modified lib/.
+            - Updated previous version references in README.md.
+            - No application code changes.
+
+            Please review before merging.
+          base: ${{ github.event.repository.default_branch }}
+          add-paths: |
+            README.md
+            CHANGELOG.md
