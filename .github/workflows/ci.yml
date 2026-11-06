@@ -100,7 +100,7 @@ jobs:
         run: gem build bharat_filter_engine.gemspec
       - name: Install built gem and load it
         run: |
-          gem install --local ./bharat_filter_engine-*.gem
+          gem install ./bharat_filter_engine-*.gem
           cd "$(mktemp -d)"
           ruby -e 'require "bharat_filter_engine"; puts "loaded bharat_filter_engine #{BharatFilterEngine::VERSION}"'
       - uses: actions/upload-artifact@v4
