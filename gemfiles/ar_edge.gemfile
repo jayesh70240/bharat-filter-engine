@@ -1,0 +1,17 @@
+# frozen_string_literal: true
+
+source 'https://rubygems.org'
+
+gemspec path: '../'
+
+github 'rails/rails', branch: 'main' do
+  gem 'activemodel'
+  gem 'activerecord'
+  gem 'activesupport'
+end
+
+gem 'sqlite3', '>= 2.1'
+
+gem 'database_cleaner-active_record'
+gem 'rake'
+gem 'rspec'

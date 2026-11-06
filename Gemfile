@@ -12,6 +12,8 @@ group :development, :test do
   gem 'rake'
   gem 'rspec'
   gem 'rubocop-rails-omakase', require: false
+  gem 'rubocop-rake', require: false
+  gem 'rubocop-rspec', require: false
   gem 'sqlite3'
 end
 
