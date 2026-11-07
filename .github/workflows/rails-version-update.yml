@@ -30,6 +30,7 @@ jobs:
           require 'net/http'
           require 'json'
           require 'rubygems'
+          require 'yaml'
 
           uri = URI('https://rubygems.org/api/v1/versions/activerecord.json')
           response = Net::HTTP.get_response(uri)
@@ -75,6 +76,22 @@ jobs:
             GEMFILE
 
             puts "Created #{file} for ActiveRecord #{latest}"
+
+            # ci.yml aborts if a gemfile has no entry in compatibility.yml, so add one.
+            # Start from the newest known series' Ruby versions; CI on this PR will tell if
+            # the new Rails dropped any of them.
+            compat_file = 'gemfiles/compatibility.yml'
+            compat = YAML.load_file(compat_file)
+
+            unless compat.key?(series)
+              newest = compat.keys.max_by { |key| Gem::Version.new(key) }
+              rubies = compat.fetch(newest).map { |ruby| %("#{ruby}") }.join(', ')
+              content = File.read(compat_file)
+              content += "\n" unless content.end_with?("\n")
+
+              File.write(compat_file, "#{content}\"#{series}\": [#{rubies}]\n")
+              puts "Added Rails #{series} to #{compat_file} (copied Ruby versions from #{newest})"
+            end
           else
             puts "#{file} already exists"
           end
@@ -93,7 +110,12 @@ jobs:
             - Latest stable ActiveRecord: ${{ steps.detect.outputs.version }}
             - Generated file: `${{ steps.detect.outputs.file }}`
 
+            - Also added `gemfiles/compatibility.yml` entry (Ruby versions copied from the
+              previous newest series -- please adjust if this Rails version drops any Ruby).
+
             Dynamic CI matrix will test the new compatibility Gemfile.
           branch: automation/active-record-${{ steps.detect.outputs.series }}
           delete-branch: true
-          add-paths: ${{ steps.detect.outputs.file }}
+          add-paths: |
+            ${{ steps.detect.outputs.file }}
+            gemfiles/compatibility.yml
