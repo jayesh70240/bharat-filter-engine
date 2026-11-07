@@ -9,12 +9,14 @@ module BharatFilterEngine
     def resolve(path)
       parts = path.to_s.split('__').map(&:to_sym)
       return nil if parts.empty?
+
       current_klass = @scope.klass
       reflections = []
 
       parts.each do |association_name|
         reflection = current_klass.reflect_on_association(association_name)
         return nil unless reflection
+
         reflections << reflection
         current_klass = reflection.klass
       end
@@ -48,11 +50,13 @@ module BharatFilterEngine
 
       return nil unless result
       return nil unless result[:klass].column_names.include?(column)
+
       result.merge(column: column)
     end
 
     def join(scope, associations)
       return scope if associations.blank?
+
       scope.joins(build_nested_join(associations))
     end
 
