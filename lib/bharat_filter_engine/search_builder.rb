@@ -4,8 +4,9 @@ module BharatFilterEngine
   class SearchBuilder
     LIKE_ESCAPE_CHAR = '\\'
 
-    def initialize(scope:, allowed_columns:)
+    def initialize(scope:, allowed_columns:, tracker: nil)
       @scope = scope
+      @tracker = tracker || JoinTracker.new(scope.klass)
       @allowed_columns =
         Array(allowed_columns).map(&:to_s)
 
@@ -132,6 +133,7 @@ module BharatFilterEngine
       result = resolver.resolve_column(field)
 
       return [scope, nil] unless result
+      return [scope, subquery_condition(result, query)] if @tracker.claim(result) == :subquery
 
       joined_scope =
         resolver.join(
@@ -145,6 +147,16 @@ module BharatFilterEngine
         .matches(query, LIKE_ESCAPE_CHAR)
 
       [joined_scope, condition]
+    end
+
+    # `primary_key IN (SELECT ... JOIN ... WHERE column LIKE ...)` for a nested column whose
+    # table is already joined through another path (e.g. client + referrer -> clients).
+    def subquery_condition(result, query)
+      klass = @scope.klass
+      matcher = result[:klass].arel_table[result[:column]].matches(query, LIKE_ESCAPE_CHAR)
+      subquery = resolver.subquery(result[:associations]) { |relation| relation.where(matcher) }
+
+      klass.arel_table[klass.primary_key].in(subquery.arel)
     end
 
     def like_query(term)
