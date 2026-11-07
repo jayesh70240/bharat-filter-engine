@@ -12,6 +12,7 @@ require_relative 'bharat_filter_engine/column_helper'
 require_relative 'bharat_filter_engine/rule_normalizer'
 require_relative 'bharat_filter_engine/search_builder'
 require_relative 'bharat_filter_engine/dynamic_filter_values'
+require_relative 'bharat_filter_engine/join_tracker'
 require_relative 'bharat_filter_engine/engine'
 
 module BharatFilterEngine
