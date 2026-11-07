@@ -2,10 +2,22 @@
 
 module BharatFilterEngine
   class SearchBuilder
-    def initialize(scope:, allowed_columns:)
+    LIKE_ESCAPE_CHAR = '\\'
+
+    def initialize(scope:, allowed_columns:, tracker: nil)
       @scope = scope
+      @tracker = tracker || JoinTracker.new(scope.klass)
       @allowed_columns =
         Array(allowed_columns).map(&:to_s)
+
+      if @allowed_columns.present? &&
+         @allowed_columns.none? { |field| valid_field?(field) }
+
+        raise InvalidConfigurationError,
+              'BharatFilterEngine: none of the configured allowed_columns ' \
+              "#{@allowed_columns.inspect} could be resolved on " \
+              "#{@scope.klass}. Check `dbcolumns:` in your filter config."
+      end
     end
 
     def apply(value)
@@ -23,7 +35,7 @@ module BharatFilterEngine
     private
 
     def simple_search(search)
-      query = "%#{search}%"
+      query = like_query(search)
       conditions = []
 
       @allowed_columns.each do |dbcolumn|
@@ -41,7 +53,7 @@ module BharatFilterEngine
         else
           table = @scope.klass.arel_table
 
-          conditions << table[dbcolumn].matches(query)
+          conditions << table[dbcolumn].matches(query, LIKE_ESCAPE_CHAR)
         end
       end
 
@@ -70,7 +82,7 @@ module BharatFilterEngine
               next if search_value.blank?
               next unless valid_field?(field)
 
-              query = "%#{search_value.strip}%"
+              query = like_query(search_value.strip)
 
               if field.include?('__')
                 @scope, condition =
@@ -88,10 +100,10 @@ module BharatFilterEngine
                         .quote_column_name(field)
 
                 Arel.sql(
-                  "#{@scope.klass.quoted_table_name}.#{quoted_column}::text"
-                ).matches(query)
+                  "CAST(#{@scope.klass.quoted_table_name}.#{quoted_column} AS TEXT)"
+                ).matches(query, LIKE_ESCAPE_CHAR)
               else
-                @scope.klass.arel_table[field].matches(query)
+                @scope.klass.arel_table[field].matches(query, LIKE_ESCAPE_CHAR)
               end
             end
 
@@ -121,6 +133,7 @@ module BharatFilterEngine
       result = resolver.resolve_column(field)
 
       return [scope, nil] unless result
+      return [scope, subquery_condition(result, query)] if @tracker.claim(result) == :subquery
 
       joined_scope =
         resolver.join(
@@ -131,9 +144,26 @@ module BharatFilterEngine
       condition =
         result[:klass]
         .arel_table[result[:column]]
-        .matches(query)
+        .matches(query, LIKE_ESCAPE_CHAR)
 
       [joined_scope, condition]
+    end
+
+    # `primary_key IN (SELECT ... JOIN ... WHERE column LIKE ...)` for a nested column whose
+    # table is already joined through another path (e.g. client + referrer -> clients).
+    def subquery_condition(result, query)
+      klass = @scope.klass
+      matcher = result[:klass].arel_table[result[:column]].matches(query, LIKE_ESCAPE_CHAR)
+      subquery = resolver.subquery(result[:associations]) { |relation| relation.where(matcher) }
+
+      klass.arel_table[klass.primary_key].in(subquery.arel)
+    end
+
+    def like_query(term)
+      escaped =
+        term.to_s.gsub(/[\\%_]/) { |char| "#{LIKE_ESCAPE_CHAR}#{char}" }
+
+      "%#{escaped}%"
     end
 
     # AssociationResolver only needs @scope.klass (which never changes

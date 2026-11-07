@@ -107,6 +107,16 @@ RSpec.describe BharatFilterEngine::DynamicFilterValues do
     expect(result).to be_nil
   end
 
+  it 'returns nil for an invalid association at a deeper level' do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'lead__something__name'
+      ).call
+
+    expect(result).to be_nil
+  end
+
   it 'does not return blank values' do
     Sale.create!(stage: '')
     Sale.create!(stage: nil)
@@ -120,5 +130,133 @@ RSpec.describe BharatFilterEngine::DynamicFilterValues do
     expect(result).to eq(
       %w[new qualified]
     )
+  end
+
+  it 'returns distinct values for an integer column' do
+    Sale.create!(project_id: 3)
+    Sale.create!(project_id: 1)
+    Sale.create!(project_id: 3)
+    Sale.create!(project_id: nil)
+
+    result = described_class.new(scope: Sale.all, field: 'project_id').call
+    expect(result).to eq([1, 3])
+  end
+
+  it 'keeps a zero value for a numeric column' do
+    Sale.create!(amount: 0)
+    Sale.create!(amount: 5)
+
+    result = described_class.new(scope: Sale.all, field: 'amount').call
+    expect(result).to eq([0, 5])
+  end
+
+  it 'returns distinct values for a datetime column' do
+    Sale.create!(actual_sale_date: Time.utc(2013, 1, 1))
+    Sale.create!(actual_sale_date: nil)
+
+    result = described_class.new(scope: Sale.all, field: 'actual_sale_date').call
+    expect(result.size).to eq(1)
+  end
+
+  it 'returns distinct values for a nested integer column' do
+    client = Client.create!(name: 'Nested Co')
+    lead = Lead.create!(source: 'web', client: client)
+    Sale.create!(lead: lead)
+    Sale.create!(lead: lead)
+    Sale.create!(lead: nil)
+
+    result = described_class.new(scope: Sale.all, field: 'lead__client_id').call
+    expected = Sale.joins(:lead).distinct.pluck('leads.client_id').compact.sort
+
+    expect(result).to include(client.id)
+    expect(result).to eq(expected)
+  end
+
+  it 'filters values by a partial term' do
+    Sale.create!(stage: 'closed')
+
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'stage',
+        term: 'qual'
+      ).call
+
+    expect(result).to eq(['qualified'])
+  end
+
+  it 'is case-insensitive when filtering by term' do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'stage',
+        term: 'QUAL'
+      ).call
+
+    expect(result).to eq(['qualified'])
+  end
+
+  it 'escapes LIKE wildcards in the term' do
+    Sale.create!(stage: 'sale_2026')
+    Sale.create!(stage: 'saleX2026')
+
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'stage',
+        term: 'sale_2026'
+      ).call
+
+    expect(result).to eq(['sale_2026'])
+  end
+
+  it 'limits the number of returned values' do
+    Sale.create!(stage: 'closed')
+
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'stage',
+        limit: 2
+      ).call
+
+    expect(result).to eq(%w[closed new])
+  end
+
+  it 'ignores a limit of zero' do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'stage',
+        limit: 0
+      ).call
+
+    expect(result).to eq(%w[new qualified])
+  end
+
+  it 'combines term and limit together' do
+    Sale.create!(stage: 'quarantined')
+    Sale.create!(stage: 'qualified_lead')
+
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'stage',
+        term: 'qua',
+        limit: 1
+      ).call
+
+    expect(result).to eq(['qualified'])
+  end
+
+  it 'works with a nested field and a term together' do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        field: 'lead__client__name',
+        term: 'Jo'
+      ).call
+
+    expect(result).to eq(['John'])
   end
 end
