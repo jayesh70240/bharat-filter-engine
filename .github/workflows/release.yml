@@ -24,7 +24,7 @@ jobs:
       prerelease: ${{ steps.tag.outputs.prerelease }}
       version: ${{ steps.tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: ruby/setup-ruby@v1
@@ -59,7 +59,7 @@ jobs:
       id-token: write # RubyGems "trusted publishing" (OIDC) -- no API key stored
       contents: write # lets release-gem push/verify the tag
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
