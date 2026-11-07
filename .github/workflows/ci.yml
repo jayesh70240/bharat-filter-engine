@@ -135,7 +135,7 @@ jobs:
           cd "$(mktemp -d)"
           ruby -e 'require "bharat_filter_engine"; puts "loaded bharat_filter_engine #{BharatFilterEngine::VERSION}"'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: gem
           path: bharat_filter_engine-*.gem
