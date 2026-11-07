@@ -8,18 +8,13 @@ module BharatFilterEngine
 
     def resolve(path)
       parts = path.to_s.split('__').map(&:to_sym)
-
       return nil if parts.empty?
 
       current_klass = @scope.klass
       reflections = []
 
       parts.each do |association_name|
-        reflection =
-          current_klass.reflect_on_association(
-            association_name
-          )
-
+        reflection = current_klass.reflect_on_association(association_name)
         return nil unless reflection
 
         reflections << reflection
@@ -36,11 +31,6 @@ module BharatFilterEngine
 
     def resolve_column(field)
       field = field.to_s
-
-      # ----------------------------------------
-      # Direct column
-      # ----------------------------------------
-
       if @scope.klass.column_names.include?(field)
         return {
           column: field,
@@ -50,41 +40,32 @@ module BharatFilterEngine
         }
       end
 
-      # ----------------------------------------
       # Nested column
-      #
       # lead__client__name
-      #
       # lead -> client -> name
-      # ----------------------------------------
-
       parts = field.split('__')
-
-      column =
-        parts.pop
-
-      association_path =
-        parts.join('__')
-
-      result =
-        resolve(association_path)
+      column = parts.pop
+      association_path = parts.join('__')
+      result = resolve(association_path)
 
       return nil unless result
+      return nil unless result[:klass].column_names.include?(column)
 
-      return nil unless
-        result[:klass].column_names.include?(column)
-
-      result.merge(
-        column: column
-      )
+      result.merge(column: column)
     end
 
     def join(scope, associations)
       return scope if associations.blank?
 
-      scope.joins(
-        build_nested_join(associations)
-      )
+      scope.joins(build_nested_join(associations))
+    end
+
+    def subquery(associations)
+      klass = @scope.klass
+      relation = klass.unscoped.joins(build_nested_join(associations))
+      relation = yield(relation) if block_given?
+
+      relation.select(klass.arel_table[klass.primary_key])
     end
 
     private

@@ -57,6 +57,8 @@ module BharatFilterEngine
 
     def call
       scope = @scope
+      @tracker = JoinTracker.new(scope.klass)
+      @subquery_groups = {}
 
       @config.each do |key, raw_rule|
         value =
@@ -75,6 +77,10 @@ module BharatFilterEngine
             rule,
             value
           )
+      end
+
+      @subquery_groups.each_value do |group|
+        scope = apply_subquery_group(scope, group)
       end
 
       scope
@@ -119,6 +125,18 @@ module BharatFilterEngine
               'in your filter config.'
       end
 
+      if @tracker.claim(result) == :subquery
+        group =
+          (@subquery_groups[result[:associations]] ||= {
+            result: result,
+            entries: []
+          })
+
+        group[:entries] << [rule, value]
+
+        return scope
+      end
+
       joined_scope =
         resolver.join(
           scope,
@@ -132,6 +150,25 @@ module BharatFilterEngine
         table_name: result[:table_name],
         klass: result[:klass]
       ).distinct
+    end
+
+    def apply_subquery_group(scope, group)
+      result = group[:result]
+
+      subquery =
+        AssociationResolver.new(scope).subquery(result[:associations]) do |relation|
+          group[:entries].reduce(relation) do |current, (rule, value)|
+            apply_filter_by_type(
+              current,
+              rule,
+              value,
+              table_name: result[:table_name],
+              klass: result[:klass]
+            )
+          end
+        end
+
+      scope.where(scope.klass.primary_key => subquery)
     end
 
     def apply_filter_by_type(
@@ -211,7 +248,8 @@ module BharatFilterEngine
       when :search
         SearchBuilder.new(
           scope: scope,
-          allowed_columns: rule[:dbcolumns]
+          allowed_columns: rule[:dbcolumns],
+          tracker: @tracker
         ).apply(value)
 
       else
