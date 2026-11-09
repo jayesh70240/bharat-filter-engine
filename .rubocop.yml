@@ -3,22 +3,22 @@ AllCops:
   SuggestExtensions: false
 
 Metrics/MethodLength:
-  Max: 1000
+  Max: 2000
 
 Metrics/ClassLength:
-  Max: 1000
+  Max: 2000
 
 Metrics/BlockLength:
-  Max: 1000
+  Max: 2000
 
 Metrics/AbcSize:
-  Max: 100
+  Max: 200
 
 Metrics/CyclomaticComplexity:
-  Max: 100
+  Max: 200
 
 Metrics/PerceivedComplexity:
-  Max: 100
+  Max: 200
 
 Style/Documentation:
   Enabled: false

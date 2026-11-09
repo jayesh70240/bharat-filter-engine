@@ -14,8 +14,10 @@ Gem::Specification.new do |spec|
 
   spec.description =
     'Configurable Rails ActiveRecord filtering engine supporting ' \
-    'string, array, boolean, numeric, date-range, nested association ' \
-    'and AND/OR search filters.'
+    'string, array, boolean, numeric (with gte/lte/between ranges), ' \
+    'date-range, presence, negate/exclude, nested association, and ' \
+    'AND/OR search filters, plus dynamic filter-value lookups for ' \
+    'dropdowns/autocomplete.'
 
   spec.homepage =
     'https://github.com/jayesh70240/bharat-filter-engine'
@@ -41,6 +43,9 @@ Gem::Specification.new do |spec|
   spec.add_dependency 'activesupport', '>= 6.1'
 
   spec.metadata = {
+    'homepage_uri' =>
+      'https://github.com/jayesh70240/bharat-filter-engine',
+
     'source_code_uri' =>
       'https://github.com/jayesh70240/bharat-filter-engine',
 

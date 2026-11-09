@@ -27,6 +27,7 @@ ActiveRecord::Schema.define do
     t.string :source
     t.string :status
     t.references :client
+    t.integer :referrer_id
     t.datetime :created_at
   end
 
@@ -49,10 +50,12 @@ end
 class Client < ActiveRecord::Base
   belongs_to :organization
   has_many :leads
+  has_many :referred_leads, class_name: 'Lead', foreign_key: :referrer_id
 end
 
 class Lead < ActiveRecord::Base
   belongs_to :client
+  belongs_to :referrer, class_name: 'Client', optional: true
   has_many :sales
 end
 

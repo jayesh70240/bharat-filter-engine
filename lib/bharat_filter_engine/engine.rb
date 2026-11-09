@@ -2,6 +2,7 @@
 
 module BharatFilterEngine
   class Engine
+    NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
     class << self
       def apply(scope:, config:, params:)
         new(
@@ -31,9 +32,19 @@ module BharatFilterEngine
             rule[:dbcolumn].to_s
           end
 
+        term =
+          params[:filter_term] ||
+          params['filter_term']
+
+        limit =
+          params[:filter_limit] ||
+          params['filter_limit']
+
         DynamicFilterValues.new(
           scope: scope,
-          field: field_name
+          field: field_name,
+          term: term,
+          limit: limit
         ).call || []
       end
     end
@@ -46,6 +57,8 @@ module BharatFilterEngine
 
     def call
       scope = @scope
+      @tracker = JoinTracker.new(scope.klass)
+      @subquery_groups = {}
 
       @config.each do |key, raw_rule|
         value =
@@ -64,6 +77,10 @@ module BharatFilterEngine
             rule,
             value
           )
+      end
+
+      @subquery_groups.each_value do |group|
+        scope = apply_subquery_group(scope, group)
       end
 
       scope
@@ -100,7 +117,25 @@ module BharatFilterEngine
           association
         )
 
-      return scope unless result
+      unless result
+        raise InvalidAssociationError,
+              'BharatFilterEngine: could not resolve association ' \
+              "#{association.inspect} configured for filter " \
+              "#{rule[:dbcolumn].inspect}. Check the `association:` key " \
+              'in your filter config.'
+      end
+
+      if @tracker.claim(result) == :subquery
+        group =
+          (@subquery_groups[result[:associations]] ||= {
+            result: result,
+            entries: []
+          })
+
+        group[:entries] << [rule, value]
+
+        return scope
+      end
 
       joined_scope =
         resolver.join(
@@ -112,15 +147,36 @@ module BharatFilterEngine
         joined_scope,
         rule,
         value,
-        table_name: result[:table_name]
+        table_name: result[:table_name],
+        klass: result[:klass]
       ).distinct
+    end
+
+    def apply_subquery_group(scope, group)
+      result = group[:result]
+
+      subquery =
+        AssociationResolver.new(scope).subquery(result[:associations]) do |relation|
+          group[:entries].reduce(relation) do |current, (rule, value)|
+            apply_filter_by_type(
+              current,
+              rule,
+              value,
+              table_name: result[:table_name],
+              klass: result[:klass]
+            )
+          end
+        end
+
+      scope.where(scope.klass.primary_key => subquery)
     end
 
     def apply_filter_by_type(
       scope,
       rule,
       value,
-      table_name: nil
+      table_name: nil,
+      klass: nil
     )
       column =
         rule[:dbcolumn]
@@ -132,7 +188,8 @@ module BharatFilterEngine
           scope,
           column,
           value,
-          table_name
+          table_name,
+          negate: rule[:negate]
         )
 
       when :boolean
@@ -140,14 +197,16 @@ module BharatFilterEngine
           scope,
           column,
           value,
-          table_name
+          table_name,
+          negate: rule[:negate]
         )
 
       when :integer
         apply_numeric_filter(
           scope,
           rule,
-          value.to_i,
+          value,
+          :to_i,
           table_name: table_name
         )
 
@@ -155,7 +214,8 @@ module BharatFilterEngine
         apply_numeric_filter(
           scope,
           rule,
-          value.to_f,
+          value,
+          :to_f,
           table_name: table_name
         )
 
@@ -164,7 +224,8 @@ module BharatFilterEngine
           scope,
           column,
           value,
-          table_name
+          table_name,
+          negate: rule[:negate]
         )
 
       when :daterange
@@ -175,10 +236,20 @@ module BharatFilterEngine
           table_name: table_name
         )
 
+      when :presence
+        apply_presence_filter(
+          scope,
+          column,
+          value,
+          table_name,
+          klass: klass
+        )
+
       when :search
         SearchBuilder.new(
           scope: scope,
-          allowed_columns: rule[:dbcolumns]
+          allowed_columns: rule[:dbcolumns],
+          tracker: @tracker
         ).apply(value)
 
       else
@@ -190,13 +261,15 @@ module BharatFilterEngine
       scope,
       column,
       value,
-      table_name
+      table_name,
+      negate: false
     )
       apply_condition(
         scope,
         column,
         Array(value),
-        table_name
+        table_name,
+        negate: negate
       )
     end
 
@@ -204,7 +277,8 @@ module BharatFilterEngine
       scope,
       column,
       value,
-      table_name
+      table_name,
+      negate: false
     )
       cast_value =
         ActiveModel::Type::Boolean
@@ -215,7 +289,8 @@ module BharatFilterEngine
         scope,
         column,
         cast_value,
-        table_name
+        table_name,
+        negate: negate
       )
     end
 
@@ -223,37 +298,80 @@ module BharatFilterEngine
       scope,
       column,
       value,
-      table_name
+      table_name,
+      negate: false
     )
       apply_condition(
         scope,
         column,
         value,
-        table_name
+        table_name,
+        negate: negate
       )
     end
 
-    # Shared by array/boolean/string/exact-numeric filters: applies a
-    # plain equality (or IN, for arrays) condition, qualifying it by
-    # table_name when the filter comes from a joined association.
-    def apply_condition(scope, column, value, table_name)
-      if table_name
-        scope.where(
-          table_name => {
-            column => value
-          }
-        )
+    def apply_presence_filter(scope, column, value, table_name, klass: nil)
+      present = ActiveModel::Type::Boolean.new.cast(value)
+      klass ||= scope.klass
+      arel_column =
+        if table_name
+          Arel::Table.new(table_name)[column]
+        else
+          klass.arel_table[column]
+        end
+
+      if present
+        scope.where(ColumnHelper.present_predicate(arel_column, klass, column))
       else
-        scope.where(
-          column => value
+        scope.where(ColumnHelper.blank_predicate(arel_column, klass, column))
+      end
+    end
+
+    def apply_condition(scope, column, value, table_name, negate: false)
+      if negate && value.is_a?(Array)
+        return apply_negated_array_condition(
+          scope,
+          column,
+          value,
+          table_name
         )
       end
+
+      condition =
+        if table_name
+          { table_name => { column => value } }
+        else
+          { column => value }
+        end
+
+      negate ? scope.where.not(condition) : scope.where(condition)
+    end
+
+    def apply_negated_array_condition(scope, column, values, table_name)
+      arel_column =
+        if table_name
+          Arel::Table.new(table_name)[column]
+        else
+          scope.klass.arel_table[column]
+        end
+
+      membership = arel_column.in(values.compact)
+
+      predicate =
+        if values.include?(nil)
+          arel_column.eq(nil).or(membership)
+        else
+          membership
+        end
+
+      scope.where(Arel::Nodes::Not.new(predicate))
     end
 
     def apply_numeric_filter(
       scope,
       rule,
       value,
+      caster,
       table_name: nil
     )
       column =
@@ -269,27 +387,72 @@ module BharatFilterEngine
       case rule[:range_type]
 
       when :gte
+        return scope unless numeric_string?(value)
 
-        scope.where(
-          "#{qualified_column} >= ?",
-          value
-        )
+        scope.where("#{qualified_column} >= ?", cast_numeric(value, caster))
 
       when :lte
+        return scope unless numeric_string?(value)
 
-        scope.where(
-          "#{qualified_column} <= ?",
-          value
+        scope.where("#{qualified_column} <= ?", cast_numeric(value, caster))
+
+      when :between
+        apply_numeric_between(
+          scope,
+          qualified_column,
+          value,
+          caster
         )
 
       else
+        return scope unless numeric_string?(value)
+
         apply_condition(
           scope,
           column,
-          value,
-          table_name
+          cast_numeric(value, caster),
+          table_name,
+          negate: rule[:negate]
         )
       end
+    end
+
+    def apply_numeric_between(scope, qualified_column, value, caster)
+      return scope unless value.present?
+
+      raw_from, raw_to =
+        extract_bounds(value)
+
+      return scope unless
+        raw_from.present? || raw_to.present?
+
+      if raw_from.present? && numeric_string?(raw_from)
+        from =
+          cast_numeric(raw_from, caster)
+      end
+
+      if raw_to.present? && numeric_string?(raw_to)
+        to =
+          cast_numeric(raw_to, caster)
+      end
+
+      return scope unless from || to
+
+      if from && to
+        scope.where(qualified_column => from..to)
+      elsif from
+        scope.where("#{qualified_column} >= ?", from)
+      else
+        scope.where("#{qualified_column} <= ?", to)
+      end
+    end
+
+    def numeric_string?(value)
+      value.to_s.strip.match?(NUMERIC_PATTERN)
+    end
+
+    def cast_numeric(value, caster)
+      value.to_s.public_send(caster)
     end
 
     def apply_date_range_filter(
@@ -310,43 +473,24 @@ module BharatFilterEngine
           column.to_s
         end
 
-      from, to =
-        case value
-
-        when Hash
-          [
-            value[:from] ||
-              value['from'],
-
-            value[:to] ||
-              value['to']
-          ]
-
-        when Array
-          value
-
-        when String
-          value
-        .split(',')
-        .map(&:strip)
-
-        end
+      raw_from, raw_to =
+        extract_bounds(value)
 
       return scope unless
-        from.present? || to.present?
+        raw_from.present? || raw_to.present?
 
-      if from.present?
+      if raw_from.present?
         from =
           normalize_date(
-            from,
+            raw_from,
             :start
           )
       end
 
-      if to.present?
+      if raw_to.present?
         to =
           normalize_date(
-            to,
+            raw_to,
             :end
           )
       end
@@ -370,6 +514,28 @@ module BharatFilterEngine
           "#{qualified_column} <= ?",
           to
         )
+      end
+    end
+
+    def extract_bounds(value)
+      case value
+
+      when Hash
+        [
+          value[:from] || value['from'],
+          value[:to] || value['to']
+        ]
+
+      when Array
+        value
+
+      when String
+        value
+          .split(',')
+          .map(&:strip)
+
+      else
+        [nil, nil]
       end
     end
 
