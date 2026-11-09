@@ -93,6 +93,27 @@ RSpec.describe BharatFilterEngine::SearchBuilder do
     expect(result).to contain_exactly(sale_two)
   end
 
+  it 'returns each record once when searching through a has_many association' do
+    matching_client = Client.create!(name: 'John1')
+    Lead.create!(source: 'google', client: matching_client)
+    Lead.create!(source: 'google', client: matching_client)
+    Client.create!(name: 'John2').tap do |other_client|
+      Lead.create!(source: 'meta', client: other_client)
+    end
+
+    result =
+      described_class.new(
+        scope: Client.all,
+        allowed_columns: [:leads__source]
+      ).apply(
+        'leads__source=google'
+      )
+
+    expect(result).to contain_exactly(client, matching_client)
+    expect(result.count).to eq(2)
+    expect(result.order(:id).limit(1).pluck(:id)).to eq([client.id])
+  end
+
   it 'supports OR search' do
     result =
       described_class.new(
