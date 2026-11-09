@@ -136,16 +136,9 @@ module BharatFilterEngine
       return [scope, nil] unless result
       return [scope, subquery_condition(result, query)] if @tracker.claim(result) == :subquery
 
-      joined_scope =
-        resolver.join(
-          scope,
-          result[:associations]
-        )
+      joined_scope = resolver.join(scope, result[:associations]).distinct
 
-      condition =
-        result[:klass]
-        .arel_table[result[:column]]
-        .matches(query, LIKE_ESCAPE_CHAR)
+      condition = result[:klass].arel_table[result[:column]].matches(query, LIKE_ESCAPE_CHAR)
 
       [joined_scope, condition]
     end
