@@ -134,11 +134,10 @@ For every `key => rule` pair in `config`, the engine looks up
 conditions and default ordering are preserved. Otherwise the rule is
 applied to the scope.
 
-Params are normalized automatically before filtering:
-
-- Comma-separated strings become arrays: `"approved,pending"` → `["approved", "pending"]`
-- JSON array strings are parsed: `'["approved","pending"]'` → `["approved", "pending"]`
-- All keys are deep-symbolized, so both `"stage"` and `:stage` work.
+Params retain their original scalar text, so commas in strings and search
+terms are preserved. Array filters accept comma-separated and JSON-array
+strings, and all parameter keys are deep-symbolized, so both `"stage"` and
+`:stage` work.
 
 ## Filter config reference
 
@@ -241,6 +240,12 @@ BharatFilterEngine.apply(
 
 Exact match by default. Add `range_type: :gte` or `range_type: :lte`
 for open-ended range filters.
+
+Exact numeric filters also accept a comma-separated list (`"1,2"` matches
+either value). For one formatted number, standard Western grouping
+(`"5,000"`) and Indian grouping (`"1,00,000"`) are both accepted.
+Integer filters accept whole numbers only; use a `:float` filter for decimal
+values.
 
 ```ruby
 # Exact match
@@ -485,6 +490,10 @@ BharatFilterEngine.filter_values(
 If `filter_field` isn't present in `config`, or doesn't have a
 `dbcolumn`, this returns `[]` rather than raising.
 
+Results are capped at 100 values. `filter_limit` can request a smaller
+positive limit; zero, negative, non-numeric, or oversized values use the
+safe maximum.
+
 You can also use `BharatFilterEngine::DynamicFilterValues` directly:
 
 ```ruby
@@ -606,6 +615,9 @@ BharatFilterEngine::InvalidConfigurationError
 BharatFilterEngine::InvalidFilterError
 BharatFilterEngine::InvalidAssociationError
 ```
+
+An invalid date passed to a `:daterange` filter raises
+`BharatFilterEngine::InvalidFilterError`.
 
 Invalid associations/columns referenced via `__` notation don't raise
 by default — `AssociationResolver` and `DynamicFilterValues` simply
