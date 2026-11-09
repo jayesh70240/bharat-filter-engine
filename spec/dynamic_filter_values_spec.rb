@@ -223,15 +223,16 @@ RSpec.describe BharatFilterEngine::DynamicFilterValues do
     expect(result).to eq(%w[closed new])
   end
 
-  it 'ignores a limit of zero' do
-    result =
-      described_class.new(
-        scope: Sale.all,
-        field: 'stage',
-        limit: 0
-      ).call
+  it 'caps invalid and oversized limits' do
+    (described_class::MAX_LIMIT + 1).times do |index|
+      Sale.create!(stage: "stage-#{index}")
+    end
 
-    expect(result).to eq(%w[new qualified])
+    [0, -1, 'not-a-number', 999_999_999].each do |limit|
+      result = described_class.new(scope: Sale.all,field: 'stage',limit: limit).call
+
+      expect(result.size).to eq(described_class::MAX_LIMIT)
+    end
   end
 
   it 'combines term and limit together' do
