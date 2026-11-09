@@ -8,7 +8,7 @@ query string) into a filtered `ActiveRecord::Relation` — including
 filters on associated models, free-text search, and dynamically
 populated dropdown values.
 
-[![Gem Version](https://img.shields.io/badge/version-0.1.2-blue)](CHANGELOG.md)
+[![Gem Version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -52,6 +52,15 @@ populated dropdown values.
 - Automatically ignores blank params so existing scope chains and
   default ordering are left untouched
 - Legacy config format still supported (see below)
+
+## What's new in 0.2.0
+
+- Added a new `:presence` filter type to check for present or blank values across both string and non-string columns
+- Added a `:between` range type for numeric filters (`:integer` and `:float`)
+- Added support for rule negation via `negate: true` on string, boolean, array, and exact numeric filters
+- Added term-based filtering (`filter_term`) and result limits (`filter_limit`) to `Engine.filter_values` and `DynamicFilterValues`
+- Introduced configuration validations and explicit error raising for invalid filter rules and unresolvable associations
+- Added automatic subquery routing for nested association joins targeting the same table to prevent join conflicts
 
 ## Installation
 

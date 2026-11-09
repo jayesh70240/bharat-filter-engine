@@ -4,6 +4,31 @@
 
 All notable changes to this project will be documented here.
 
+## [0.2.0] - 2026-11-09
+
+### Added
+
+- Added `:presence` filter type to filter records by presence or blankness
+- Added `:between` range type for `:integer` and `:float` filters, accepting hashes (`from`/`to`), arrays, or comma-separated bounds
+- Added `negate: true` rule configuration for `:string`, `:boolean`, `:array`, and exact numeric filters
+- Added `filter_term` and `filter_limit` parameter support to `Engine.filter_values` and `DynamicFilterValues`
+- Added strict configuration validation via `RuleNormalizer`, raising `InvalidConfigurationError` on invalid types, missing keys, or unsupported option combinations
+- Added `InvalidAssociationError` when a configured nested association cannot be resolved on the model
+- Added subquery resolution via `JoinTracker` for nested associations that would otherwise create conflicting table joins
+
+### Changed
+
+- Escaped SQL `LIKE` wildcards (`%`, `_`, `\`) in search queries and dynamic filter value terms
+- Replaced PostgreSQL-specific `::text` casting with standard `CAST(... AS TEXT)` for `id` search queries
+- Enforced that field-based search expressions only query columns defined in `allowed_columns`
+
+### Fixed
+
+- Fixed dynamic filter value retrieval on non-string columns to prevent querying for empty strings
+- Fixed nested column resolution to verify that the target column actually exists on the associated model
+
+
+
 ## [0.1.1] - 2026-08-19
 
 ### Fixed
