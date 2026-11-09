@@ -80,6 +80,7 @@ module BharatFilterEngine
 
               next if field.blank?
               next if search_value.blank?
+              next unless @allowed_columns.include?(field)
               next unless valid_field?(field)
 
               query = like_query(search_value.strip)
