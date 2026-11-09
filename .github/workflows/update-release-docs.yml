@@ -1,23 +1,29 @@
-name: Update Release Documentation (CD)
+name: Update Release Documentation
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to document"
+        required: true
+        default: "v0.2.0"
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-docs-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   update-docs:
-    name: Generate and raise documentation PR
     if: github.repository == 'jayesh70240/bharat-filter-engine'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    permissions:
-      contents: write
-      pull-requests: write
 
     steps:
       - name: Checkout default branch
@@ -25,147 +31,61 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
-          persist-credentials: false
-
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.3'
 
       - name: Fetch release tags
-        run: git fetch origin '+refs/tags/*:refs/tags/*'
+        run: git fetch --force --tags origin
 
-      - name: Verify release tag
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r scripts/docs/requirements.txt
+
+      - name: Analyze release
+        id: analyze
         env:
-          TAG: ${{ github.ref_name }}
-        run: ruby script/verify_release_tag.rb "$TAG"
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          python scripts/docs/analyze_release.py
+          HAS_CHANGES=$(python -c "import json; print(str(json.load(open('release-analysis.json'))['has_lib_changes']).lower())")
+          echo "has_changes=$HAS_CHANGES" >> "$GITHUB_OUTPUT"
 
-      - name: Generate release documentation
-        id: docs
+      - name: Generate documentation
+        if: steps.analyze.outputs.has_changes == 'true'
         env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python scripts/docs/generate_docs.py
 
-          VERSION=$(git show "$TAG:lib/bharat_filter_engine/version.rb" | ruby -ne '
-            if $_ =~ /VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]/
-              puts $1
-              exit
-            end
-          ')
-
-          if [ -z "$VERSION" ]; then
-            echo "Unable to determine release version"
-            exit 1
-          fi
-
-          PREVIOUS_TAG=$(git tag --list 'v*' --sort=-version:refname |
-            awk -v tag="$TAG" '
-              $0 == tag { found=1; next }
-              found && $0 != tag { print; exit }
-            ')
-
-          if [ -n "$PREVIOUS_TAG" ]; then
-            COMMITS=$(git log --no-merges --format='%s' \
-              "$PREVIOUS_TAG..$TAG" -- lib/)
-            OLD_VERSION="${PREVIOUS_TAG#v}"
-          else
-            COMMITS=$(git log --no-merges --format='%s' \
-              "$TAG" -- lib/)
-            OLD_VERSION=""
-          fi
-
-          if [ -z "$COMMITS" ]; then
-            echo "No changes found in lib/. Skipping PR."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          CHANGELOG_ENTRY=$(mktemp)
-
-          {
-            echo "## $VERSION"
-            echo
-            while IFS= read -r commit; do
-              [ -z "$commit" ] || echo "- $commit"
-            done <<< "$COMMITS"
-            echo
-          } > "$CHANGELOG_ENTRY"
-
-          if [ -f CHANGELOG.md ]; then
-            cat CHANGELOG.md >> "$CHANGELOG_ENTRY"
-          fi
-
-          mv "$CHANGELOG_ENTRY" CHANGELOG.md
-
-          if [ -n "$OLD_VERSION" ] && [ -f README.md ]; then
-            OLD_VERSION="$OLD_VERSION" NEW_VERSION="$VERSION" ruby -e '
-              path = "README.md"
-              content = File.read(path)
-
-              old_version = ENV.fetch("OLD_VERSION")
-              new_version = ENV.fetch("NEW_VERSION")
-
-              updated = content.gsub(
-                Regexp.new(Regexp.escape(old_version)),
-                new_version
-              )
-
-              File.write(path, updated) if content != updated
-            '
-          fi
-
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          echo "Generated documentation for $VERSION"
-
-      - name: Validate documentation changes
-        if: steps.docs.outputs.changed == 'true'
-        run: |
-          set -euo pipefail
-
-          CHANGED_FILES=$(git status --short --untracked-files=all |
-            awk '{print $NF}' |
-            sort -u)
-
-          INVALID_FILES=$(echo "$CHANGED_FILES" |
-            grep -Ev '^(README\.md|CHANGELOG\.md)$' || true)
-
-          if [ -n "$INVALID_FILES" ]; then
-            echo "Unexpected files modified:"
-            echo "$INVALID_FILES"
-            exit 1
-          fi
-
-          if ! git diff --quiet -- README.md CHANGELOG.md; then
-            echo "Documentation changes validated."
-          else
-            echo "No documentation differences to submit."
-          fi
+      - name: Validate documentation
+        if: steps.analyze.outputs.has_changes == 'true'
+        run: python scripts/docs/validate_docs.py
 
       - name: Create documentation PR
-        if: steps.docs.outputs.changed == 'true'
+        if: steps.analyze.outputs.has_changes == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          commit-message: "docs: update release documentation for ${{ github.ref_name }}"
-          branch: docs/release-${{ github.ref_name }}
-          delete-branch: true
           base: ${{ github.event.repository.default_branch }}
-          title: "docs: update release documentation (${{ github.ref_name }})"
-          body: |
-            ## Release Documentation Update
-
-            Automatically generated for `${{ github.ref_name }}`.
-
-            ### Changes
-            - CHANGELOG generated using commits affecting `lib/` only.
-            - README version references updated.
-            - No application code changes.
-
-            ### Review
-            Please review the generated documentation before merging.
-
-            This PR was automatically generated by GitHub Actions.
+          branch: docs/release-${{ inputs.release_tag || github.ref_name }}
+          delete-branch: true
           add-paths: |
             README.md
             CHANGELOG.md
+          commit-message: "docs: update release documentation for ${{ inputs.release_tag || github.ref_name }}"
+          title: "docs: release documentation for ${{ inputs.release_tag || github.ref_name }}"
+          body: |
+            ## Release documentation update
+
+            Automatically generated documentation for `${{ inputs.release_tag || github.ref_name }}`.
+
+            ### Changes
+            - Analyzed actual `lib/` source changes.
+            - Used specs as supporting evidence.
+            - Updated README and CHANGELOG.
+            - Validated generated documentation.
+
+            Please review the changes before merging.
+
+            This PR is not automatically merged.

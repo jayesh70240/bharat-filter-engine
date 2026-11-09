@@ -28,11 +28,8 @@ Gem::Specification.new do |spec|
 
   spec.files = Dir[
     'lib/**/*',
-    'spec/**/*',
     'README.md',
     'LICENSE',
-    'Rakefile',
-    'Gemfile',
     'CHANGELOG.md'
   ]
 
