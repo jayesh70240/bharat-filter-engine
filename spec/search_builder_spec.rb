@@ -174,6 +174,30 @@ RSpec.describe BharatFilterEngine::SearchBuilder do
     expect(result).to be_empty
   end
 
+  it 'returns no records when the searched model column is not allowed' do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: [:stage]
+      ).apply(
+        'approval_status=approved'
+      )
+
+    expect(result).to be_empty
+  end
+
+  it 'returns no records when the searched association column is not allowed' do
+    result =
+      described_class.new(
+        scope: Sale.all,
+        allowed_columns: [:stage]
+      ).apply(
+        'lead__client__email=john@example.com'
+      )
+
+    expect(result).to be_empty
+  end
+
   it 'supports searching the id column as text' do
     result =
       described_class.new(
