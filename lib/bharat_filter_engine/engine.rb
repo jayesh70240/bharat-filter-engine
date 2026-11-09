@@ -2,7 +2,12 @@
 
 module BharatFilterEngine
   class Engine
+    INTEGER_PATTERN = /\A[+-]?\d+\z/
     NUMERIC_PATTERN = /\A[+-]?\d+(\.\d+)?\z/
+    GROUPED_INTEGER_PATTERN =
+      /\A[+-]?(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:,\d{2})*,\d{3})\z/
+    GROUPED_NUMERIC_PATTERN =
+      /\A[+-]?(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:,\d{2})*,\d{3})(?:\.\d+)?\z/
     class << self
       def apply(scope:, config:, params:)
         new(
@@ -267,7 +272,7 @@ module BharatFilterEngine
       apply_condition(
         scope,
         column,
-        Array(value),
+        Array(normalize_array_value(value)),
         table_name,
         negate: negate
       )
@@ -294,20 +299,8 @@ module BharatFilterEngine
       )
     end
 
-    def apply_string_filter(
-      scope,
-      column,
-      value,
-      table_name,
-      negate: false
-    )
-      apply_condition(
-        scope,
-        column,
-        value,
-        table_name,
-        negate: negate
-      )
+    def apply_string_filter(scope,column,value,table_name,negate: false)
+      apply_condition(scope,column,value,table_name,negate: negate)
     end
 
     def apply_presence_filter(scope, column, value, table_name, klass: nil)
@@ -329,12 +322,11 @@ module BharatFilterEngine
 
     def apply_condition(scope, column, value, table_name, negate: false)
       if negate && value.is_a?(Array)
-        return apply_negated_array_condition(
-          scope,
-          column,
-          value,
-          table_name
-        )
+        return apply_negated_array_condition(scope,column,value,table_name)
+      end
+
+      if negate
+        return scope.where(null_inclusive_negation(scope,column,value,table_name))
       end
 
       condition =
@@ -344,38 +336,50 @@ module BharatFilterEngine
           { column => value }
         end
 
-      negate ? scope.where.not(condition) : scope.where(condition)
+      scope.where(condition)
     end
 
     def apply_negated_array_condition(scope, column, values, table_name)
-      arel_column =
-        if table_name
-          Arel::Table.new(table_name)[column]
-        else
-          scope.klass.arel_table[column]
-        end
-
+      arel_column = filter_arel_column(scope, column, table_name)
       membership = arel_column.in(values.compact)
-
-      predicate =
-        if values.include?(nil)
-          arel_column.eq(nil).or(membership)
-        else
-          membership
-        end
-
-      scope.where(Arel::Nodes::Not.new(predicate))
+      return scope.where(Arel::Nodes::Not.new(arel_column.eq(nil).or(membership))) if values.include?(nil)
+      scope.where(arel_column.eq(nil).or(Arel::Nodes::Not.new(membership)))
     end
 
-    def apply_numeric_filter(
-      scope,
-      rule,
-      value,
-      caster,
-      table_name: nil
-    )
-      column =
-        rule[:dbcolumn]
+    def null_inclusive_negation(scope, column, value, table_name)
+      arel_column = filter_arel_column(scope, column, table_name)
+      arel_column.eq(nil).or(arel_column.not_eq(value))
+    end
+
+    def filter_arel_column(scope, column, table_name)
+      if table_name
+        Arel::Table.new(table_name)[column]
+      else
+        scope.klass.arel_table[column]
+      end
+    end
+
+    def normalize_array_value(value)
+      return value unless value.is_a?(String)
+      stripped = value.strip
+      if stripped.start_with?('[')
+        parse_json_array(stripped) || value
+      elsif value.include?(',')
+        value.split(',').map(&:strip)
+      else
+        value
+      end
+    end
+
+    def parse_json_array(value)
+      parsed = JSON.parse(value)
+      parsed if parsed.is_a?(Array)
+    rescue JSON::ParserError
+      nil
+    end
+
+    def apply_numeric_filter(scope,rule,value,caster,table_name: nil)
+      column = rule[:dbcolumn]
 
       qualified_column =
         if table_name
@@ -387,53 +391,53 @@ module BharatFilterEngine
       case rule[:range_type]
 
       when :gte
-        return scope unless numeric_string?(value)
-
+        return scope unless numeric_string?(value, caster)
         scope.where("#{qualified_column} >= ?", cast_numeric(value, caster))
 
       when :lte
-        return scope unless numeric_string?(value)
-
+        return scope unless numeric_string?(value, caster)
         scope.where("#{qualified_column} <= ?", cast_numeric(value, caster))
 
       when :between
-        apply_numeric_between(
-          scope,
-          qualified_column,
-          value,
-          caster
-        )
+        apply_numeric_between(scope,qualified_column,value,caster)
 
       else
-        return scope unless numeric_string?(value)
+        values = exact_numeric_values(value, caster)
 
-        apply_condition(
-          scope,
-          column,
-          cast_numeric(value, caster),
-          table_name,
-          negate: rule[:negate]
-        )
+        return scope unless values
+        apply_condition(scope,column,values.one? ? values.first : values,table_name,negate: rule[:negate])
       end
+    end
+
+    def exact_numeric_values(value, caster)
+      values =
+        case value
+        when Array
+          value
+        when String
+          numeric_string?(value, caster) ? [value] : value.split(',').map(&:strip)
+        else
+          [value]
+        end
+
+      return unless values.all? { |entry| numeric_string?(entry, caster) }
+      values.map { |entry| cast_numeric(entry, caster) }
     end
 
     def apply_numeric_between(scope, qualified_column, value, caster)
       return scope unless value.present?
 
-      raw_from, raw_to =
-        extract_bounds(value)
+      raw_from, raw_to = extract_bounds(value)
 
       return scope unless
         raw_from.present? || raw_to.present?
 
-      if raw_from.present? && numeric_string?(raw_from)
-        from =
-          cast_numeric(raw_from, caster)
+      if raw_from.present? && numeric_string?(raw_from, caster)
+        from = cast_numeric(raw_from, caster)
       end
 
-      if raw_to.present? && numeric_string?(raw_to)
-        to =
-          cast_numeric(raw_to, caster)
+      if raw_to.present? && numeric_string?(raw_to, caster)
+        to = cast_numeric(raw_to, caster)
       end
 
       return scope unless from || to
@@ -447,24 +451,36 @@ module BharatFilterEngine
       end
     end
 
-    def numeric_string?(value)
-      value.to_s.strip.match?(NUMERIC_PATTERN)
+    def numeric_string?(value, caster)
+      !normalized_numeric_string(value, caster).nil?
     end
 
     def cast_numeric(value, caster)
-      value.to_s.public_send(caster)
+      normalized_numeric_string(value, caster).public_send(caster)
     end
 
-    def apply_date_range_filter(
-      scope,
-      rule,
-      value,
-      table_name: nil
-    )
+    def normalized_numeric_string(value, caster)
+      numeric = value.to_s.strip
+      plain_pattern, grouped_pattern = numeric_patterns(caster)
+
+      return numeric if numeric.match?(plain_pattern)
+      return numeric.delete(',') if numeric.match?(grouped_pattern)
+
+      nil
+    end
+
+    def numeric_patterns(caster)
+      if caster == :to_i
+        [INTEGER_PATTERN, GROUPED_INTEGER_PATTERN]
+      else
+        [NUMERIC_PATTERN, GROUPED_NUMERIC_PATTERN]
+      end
+    end
+
+    def apply_date_range_filter(scope,rule,value,table_name: nil)
       return scope unless value.present?
 
-      column =
-        rule[:dbcolumn]
+      column = rule[:dbcolumn]
 
       qualified_column =
         if table_name
@@ -473,47 +489,27 @@ module BharatFilterEngine
           column.to_s
         end
 
-      raw_from, raw_to =
-        extract_bounds(value)
+      raw_from, raw_to = extract_bounds(value)
 
       return scope unless
         raw_from.present? || raw_to.present?
 
       if raw_from.present?
-        from =
-          normalize_date(
-            raw_from,
-            :start
-          )
+        from = normalize_date(raw_from,:start)
       end
 
       if raw_to.present?
-        to =
-          normalize_date(
-            raw_to,
-            :end
-          )
+        to = normalize_date(raw_to,:end)
       end
 
       if from.present? && to.present?
-
-        scope.where(
-          qualified_column => from..to
-        )
+        scope.where(qualified_column => from..to)
 
       elsif from.present?
-
-        scope.where(
-          "#{qualified_column} >= ?",
-          from
-        )
+        scope.where("#{qualified_column} >= ?",from)
 
       else
-
-        scope.where(
-          "#{qualified_column} <= ?",
-          to
-        )
+        scope.where("#{qualified_column} <= ?",to)
       end
     end
 
@@ -530,9 +526,7 @@ module BharatFilterEngine
         value
 
       when String
-        value
-          .split(',')
-          .map(&:strip)
+        value.split(',').map(&:strip)
 
       else
         [nil, nil]
@@ -544,58 +538,19 @@ module BharatFilterEngine
         value.is_a?(Time) ||
         value.is_a?(ActiveSupport::TimeWithZone)
 
-      date =
-        Date.parse(
-          value.to_s
-        )
+      date = Date.parse(value.to_s)
 
       if boundary == :start
         date.beginning_of_day
       else
         date.end_of_day
       end
+    rescue Date::Error
+      raise InvalidFilterError, "BharatFilterEngine: invalid date #{value.inspect}."
     end
 
     def normalize_params(params)
-      deep_normalize_params(
-        params.to_h.deep_symbolize_keys
-      )
-    end
-
-    def deep_normalize_params(params)
-      params.transform_values do |value|
-        if value.is_a?(Hash)
-          deep_normalize_params(value)
-        else
-          normalize_value(value)
-        end
-      end
-    end
-
-    def normalize_value(value)
-      return value if value.is_a?(Array)
-      return value unless value.is_a?(String)
-
-      stripped =
-        value.strip
-
-      if stripped.start_with?('[')
-        begin
-          JSON.parse(stripped)
-        rescue JSON::ParserError
-          value
-        end
-
-      elsif value.include?(',')
-
-        value
-          .split(',')
-          .map(&:strip)
-
-      else
-
-        value
-      end
+      params.to_h.deep_symbolize_keys
     end
   end
 end
