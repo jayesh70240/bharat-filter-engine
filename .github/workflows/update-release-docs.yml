@@ -1,3 +1,4 @@
+
 name: Update Release Documentation
 
 on:
@@ -8,84 +9,833 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to document"
+        description: "Release tag"
         required: true
-        default: "v0.2.0"
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: release-docs-${{ github.ref }}
+  group: update-release-docs
   cancel-in-progress: false
 
 jobs:
   update-docs:
-    if: github.repository == 'jayesh70240/bharat-filter-engine'
     runs-on: ubuntu-latest
 
+    env:
+      AI_PROVIDER: ${{ vars.AI_PROVIDER }}
+      AI_MODEL: ${{ vars.AI_MODEL }}
+      AI_BASE_URL: ${{ vars.AI_BASE_URL }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
     steps:
-      - name: Checkout default branch
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
-      - name: Fetch release tags
-        run: git fetch --force --tags origin
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: pip install -r scripts/docs/requirements.txt
-
-      - name: Analyze release
-        id: analyze
+      - name: Resolve release versions
+        id: release
+        shell: bash
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          python scripts/docs/analyze_release.py
-          HAS_CHANGES=$(python -c "import json; print(str(json.load(open('release-analysis.json'))['has_lib_changes']).lower())")
-          echo "has_changes=$HAS_CHANGES" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
 
-      - name: Generate documentation
-        if: steps.analyze.outputs.has_changes == 'true'
+          git fetch --force --tags
+
+          CURRENT_TAG="${INPUT_RELEASE_TAG:-${GITHUB_REF_NAME}}"
+
+          if ! printf '%s' "$CURRENT_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Invalid stable release tag: $CURRENT_TAG"
+            exit 1
+          fi
+
+          VERSION="${CURRENT_TAG#v}"
+
+          TAGS_FILE="$(mktemp)"
+          git tag --list 'v*' --sort=-version:refname > "$TAGS_FILE"
+
+          PREVIOUS_TAG=""
+          FOUND_CURRENT="false"
+
+          while IFS= read -r TAG; do
+            if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              continue
+            fi
+
+            if test "$TAG" = "$CURRENT_TAG"; then
+              FOUND_CURRENT="true"
+              continue
+            fi
+
+            if test "$FOUND_CURRENT" = "true"; then
+              PREVIOUS_TAG="$TAG"
+              break
+            fi
+          done < "$TAGS_FILE"
+
+          rm -f "$TAGS_FILE"
+
+          if test "$FOUND_CURRENT" != "true"; then
+            echo "Release tag not found: $CURRENT_TAG"
+            exit 1
+          fi
+
+          if test -z "$PREVIOUS_TAG"; then
+            echo "No previous stable release found."
+            exit 1
+          fi
+
+          echo "current_tag=$CURRENT_TAG" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "Current release: $CURRENT_TAG"
+          echo "Previous release: $PREVIOUS_TAG"
+
+      - name: Prepare release inputs
+        shell: bash
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python scripts/docs/generate_docs.py
+          CURRENT_TAG: ${{ steps.release.outputs.current_tag }}
+          PREVIOUS_TAG: ${{ steps.release.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
 
-      - name: Validate documentation
-        if: steps.analyze.outputs.has_changes == 'true'
-        run: python scripts/docs/validate_docs.py
+          mkdir -p .release-docs/lib-chunks
 
-      - name: Create documentation PR
-        if: steps.analyze.outputs.has_changes == 'true'
-        uses: peter-evans/create-pull-request@v8
+          git diff \
+            --no-ext-diff \
+            --unified=40 \
+            "$PREVIOUS_TAG" "$CURRENT_TAG" \
+            -- lib/ > .release-docs/lib.diff
+
+          git diff \
+            --no-ext-diff \
+            --unified=20 \
+            "$PREVIOUS_TAG" "$CURRENT_TAG" \
+            -- spec/ > .release-docs/spec.diff
+
+          cp README.md .release-docs/README.original.md
+          cp CHANGELOG.md .release-docs/CHANGELOG.original.md
+
+          if test ! -s .release-docs/lib.diff; then
+            echo "No lib/ changes found between release tags."
+            exit 1
+          fi
+
+          split -b 8000 -d \
+            .release-docs/lib.diff \
+            .release-docs/lib-chunks/chunk-
+
+          echo "Library diff chunks:"
+          ls .release-docs/lib-chunks/
+
+          echo "Library diff bytes: $(wc -c < .release-docs/lib.diff)"
+          echo "Spec diff bytes: $(wc -c < .release-docs/spec.diff)"
+
+      - name: Validate AI configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -n "$AI_MODEL" || {
+            echo "AI_MODEL repository variable is required."
+            exit 1
+          }
+
+          case "$AI_PROVIDER" in
+            groq)
+              test -n "$GROQ_API_KEY" || {
+                echo "Missing GROQ_API_KEY."
+                exit 1
+              }
+              DEFAULT_BASE_URL="https://api.groq.com/openai/v1"
+              ;;
+
+            openrouter)
+              test -n "$OPENROUTER_API_KEY" || {
+                echo "Missing OPENROUTER_API_KEY."
+                exit 1
+              }
+              DEFAULT_BASE_URL="https://openrouter.ai/api/v1"
+              ;;
+
+            cerebras)
+              test -n "$CEREBRAS_API_KEY" || {
+                echo "Missing CEREBRAS_API_KEY."
+                exit 1
+              }
+              DEFAULT_BASE_URL="https://api.cerebras.ai/v1"
+              ;;
+
+            gemini)
+              test -n "$GEMINI_API_KEY" || {
+                echo "Missing GEMINI_API_KEY."
+                exit 1
+              }
+              DEFAULT_BASE_URL=""
+              ;;
+
+            *)
+              echo "Unsupported AI_PROVIDER: $AI_PROVIDER"
+              exit 1
+              ;;
+          esac
+
+          echo "AI_PROVIDER=$AI_PROVIDER" >> "$GITHUB_ENV"
+          echo "AI_MODEL=$AI_MODEL" >> "$GITHUB_ENV"
+          echo "AI_BASE_URL=${AI_BASE_URL:-$DEFAULT_BASE_URL}" >> "$GITHUB_ENV"
+
+          echo "Provider: $AI_PROVIDER"
+          echo "Model: $AI_MODEL"
+
+      - name: Analyze implementation changes
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CURRENT_TAG: ${{ steps.release.outputs.current_tag }}
+          PREVIOUS_TAG: ${{ steps.release.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+
+          API_KEY=""
+          API_URL=""
+
+          case "$AI_PROVIDER" in
+            groq)
+              API_KEY="$GROQ_API_KEY"
+              API_URL="${AI_BASE_URL%/}/chat/completions"
+              ;;
+            openrouter)
+              API_KEY="$OPENROUTER_API_KEY"
+              API_URL="${AI_BASE_URL%/}/chat/completions"
+              ;;
+            cerebras)
+              API_KEY="$CEREBRAS_API_KEY"
+              API_URL="${AI_BASE_URL%/}/chat/completions"
+              ;;
+            gemini)
+              API_KEY="$GEMINI_API_KEY"
+              API_URL="https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${API_KEY}"
+              ;;
+          esac
+
+          call_ai() {
+            local PROMPT_FILE="$1"
+            local OUTPUT_FILE="$2"
+            local MAX_OUTPUT="$3"
+
+            local REQUEST_FILE=".release-docs/request.json"
+            local RESPONSE_FILE=".release-docs/response.json"
+            local WAIT_SECONDS=10
+            local MAX_ATTEMPTS=9
+            local SUCCESS="false"
+            local HTTP_STATUS=""
+
+            if test "$AI_PROVIDER" = "gemini"; then
+              jq -n \
+                --rawfile prompt "$PROMPT_FILE" \
+                --argjson max_output "$MAX_OUTPUT" \
+                '{
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [{text: $prompt}]
+                    }
+                  ],
+                  generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: $max_output
+                  }
+                }' > "$REQUEST_FILE"
+            else
+              jq -n \
+                --arg model "$AI_MODEL" \
+                --rawfile prompt "$PROMPT_FILE" \
+                --argjson max_output "$MAX_OUTPUT" \
+                '{
+                  model: $model,
+                  messages: [
+                    {
+                      role: "system",
+                      content: "Follow the instructions exactly. Return only the requested content."
+                    },
+                    {
+                      role: "user",
+                      content: $prompt
+                    }
+                  ],
+                  temperature: 0.2,
+                  max_tokens: $max_output
+                }' > "$REQUEST_FILE"
+            fi
+
+            for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
+              echo "AI request attempt $ATTEMPT/$MAX_ATTEMPTS"
+
+              if test "$AI_PROVIDER" = "gemini"; then
+                HTTP_STATUS=$(curl -sS \
+                  -o "$RESPONSE_FILE" \
+                  -w '%{http_code}' \
+                  -H "Content-Type: application/json" \
+                  -X POST \
+                  "$API_URL" \
+                  --data-binary @"$REQUEST_FILE" || true)
+              else
+                HTTP_STATUS=$(curl -sS \
+                  -o "$RESPONSE_FILE" \
+                  -w '%{http_code}' \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer $API_KEY" \
+                  -X POST \
+                  "$API_URL" \
+                  --data-binary @"$REQUEST_FILE" || true)
+              fi
+
+              case "$HTTP_STATUS" in
+                2??)
+                  SUCCESS="true"
+                  break
+                  ;;
+
+                429|500|502|503|504|000)
+                  echo "Temporary API error: HTTP $HTTP_STATUS"
+
+                  jq -c '.error // .' "$RESPONSE_FILE" 2>/dev/null || true
+
+                  if test "$ATTEMPT" -lt "$MAX_ATTEMPTS"; then
+                    echo "Retrying after ${WAIT_SECONDS} seconds..."
+                    sleep "$WAIT_SECONDS"
+
+                    WAIT_SECONDS=$((WAIT_SECONDS * 2))
+
+                    if test "$WAIT_SECONDS" -gt 120; then
+                      WAIT_SECONDS=120
+                    fi
+                  fi
+                  ;;
+
+                *)
+                  echo "API request failed: HTTP $HTTP_STATUS"
+                  jq '.' "$RESPONSE_FILE" 2>/dev/null || true
+                  return 1
+                  ;;
+              esac
+            done
+
+            if test "$SUCCESS" != "true"; then
+              echo "AI request failed after $MAX_ATTEMPTS attempts."
+              jq '.' "$RESPONSE_FILE" 2>/dev/null || true
+              return 1
+            fi
+
+            if test "$AI_PROVIDER" = "gemini"; then
+              jq -er '
+                .candidates[0].content.parts
+                | map(.text // "")
+                | join("")
+              ' "$RESPONSE_FILE" > "$OUTPUT_FILE"
+            else
+              jq -er '
+                .choices[0].message.content
+                | if type == "string" then .
+                  else map(.text // "") | join("")
+                  end
+              ' "$RESPONSE_FILE" > "$OUTPUT_FILE"
+            fi
+
+            if test ! -s "$OUTPUT_FILE"; then
+              echo "AI returned an empty response."
+              return 1
+            fi
+          }
+
+          FIRST_CALL="true"
+          CHUNK_NUMBER=0
+
+          for CHUNK in .release-docs/lib-chunks/chunk-*; do
+            CHUNK_NUMBER=$((CHUNK_NUMBER + 1))
+
+            PROMPT_FILE=".release-docs/analyze-${CHUNK_NUMBER}.txt"
+            OUTPUT_FILE=".release-docs/summary-${CHUNK_NUMBER}.txt"
+
+            {
+              cat <<'PROMPT'
+          You are analyzing a Ruby on Rails gem implementation for release documentation.
+
+          Analyze ONLY the supplied lib/ implementation diff.
+
+          Rules:
+          - lib/ is the only source of truth.
+          - Do not invent features or behavior.
+          - Identify user-visible changes only.
+          - Identify changed methods, configuration, parameters, defaults,
+            accepted values, operators, separators and return behavior.
+          - Exclude tests, CI, linting and repository maintenance.
+          - Do not write README or CHANGELOG.
+          - Return a concise factual implementation summary.
+          - If this chunk contains only part of a change, state what is
+            directly visible without guessing the missing behavior.
+          PROMPT
+
+              printf '\n\nRELEASE: %s\n' "$VERSION"
+              printf '\nCHUNK: %s\n' "$CHUNK_NUMBER"
+              printf '\n========== LIB DIFF CHUNK ==========\n'
+              cat "$CHUNK"
+
+              if test "$FIRST_CALL" = "true"; then
+                printf '\n\n========== SPEC DIFF (REFERENCE ONLY) ==========\n'
+                head -c 8000 .release-docs/spec.diff
+
+                printf '\n\n========== SPEC RULE ==========\n'
+                printf '%s\n' \
+                  "The spec diff is reference only. Never claim behavior unless supported by lib/."
+                FIRST_CALL="false"
+              fi
+            } > "$PROMPT_FILE"
+
+            echo "Analyzing implementation chunk $CHUNK_NUMBER"
+
+            if test "$CHUNK_NUMBER" -gt 1; then
+              echo "Waiting 65 seconds for provider rate-limit window..."
+              sleep 65
+            fi
+
+            call_ai "$PROMPT_FILE" "$OUTPUT_FILE" 2048
+          done
+
+          cat .release-docs/summary-*.txt > .release-docs/implementation-summary.txt
+
+          test -s .release-docs/implementation-summary.txt
+
+          echo "Implementation analysis completed."
+
+      - name: Generate updated README
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          PREVIOUS_TAG: ${{ steps.release.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+
+          PROMPT_FILE=".release-docs/readme-prompt.txt"
+          OUTPUT_FILE=".release-docs/README.new.md"
+
+          {
+            cat <<'PROMPT'
+          You are a senior Ruby gem documentation engineer.
+
+          Update the complete README.md for this release.
+
+          SOURCE OF TRUTH:
+          The implementation summary was created from the lib/ diff.
+          It is the authoritative source for implementation changes.
+
+          RULES:
+          - Return the COMPLETE README.md, not a patch or summary.
+          - Preserve all valid existing sections and information.
+          - Update every affected explanation and example.
+          - Update parameters, accepted values, defaults, operators,
+            separators, configuration and return behavior when supported
+            by the implementation summary.
+          - Keep all code examples consistent with the implementation.
+          - Do not invent unsupported behavior.
+          - Do not document CI, tests, linting or repository maintenance.
+          - Do not unnecessarily shorten or remove existing documentation.
+          - Return only Markdown content.
+          - Do not wrap the response in Markdown code fences.
+          PROMPT
+
+            printf '\n\nRELEASE VERSION: %s\n' "$VERSION"
+            printf '\nPREVIOUS RELEASE: %s\n' "$PREVIOUS_TAG"
+
+            printf '\n\n========== IMPLEMENTATION SUMMARY ==========\n'
+            cat .release-docs/implementation-summary.txt
+
+            printf '\n\n========== EXISTING README ==========\n'
+            cat .release-docs/README.original.md
+          } > "$PROMPT_FILE"
+
+          echo "Waiting 65 seconds before README generation..."
+          sleep 65
+
+          call_ai() {
+            local REQUEST_FILE=".release-docs/request.json"
+            local RESPONSE_FILE=".release-docs/response.json"
+            local WAIT_SECONDS=10
+            local SUCCESS="false"
+            local HTTP_STATUS=""
+
+            if test "$AI_PROVIDER" = "gemini"; then
+              jq -n \
+                --rawfile prompt "$PROMPT_FILE" \
+                '{
+                  contents: [{role:"user",parts:[{text:$prompt}]}],
+                  generationConfig: {
+                    temperature: 0.2,
+                    maxOutputTokens: 8192
+                  }
+                }' > "$REQUEST_FILE"
+            else
+              jq -n \
+                --arg model "$AI_MODEL" \
+                --rawfile prompt "$PROMPT_FILE" \
+                '{
+                  model:$model,
+                  messages:[
+                    {
+                      role:"system",
+                      content:"Return only the complete requested README Markdown."
+                    },
+                    {
+                      role:"user",
+                      content:$prompt
+                    }
+                  ],
+                  temperature:0.2,
+                  max_tokens:8192
+                }' > "$REQUEST_FILE"
+            fi
+
+            for ATTEMPT in $(seq 1 9); do
+              echo "README generation attempt $ATTEMPT/9"
+
+              if test "$AI_PROVIDER" = "gemini"; then
+                HTTP_STATUS=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+                  -H "Content-Type: application/json" \
+                  -X POST "$API_URL" \
+                  --data-binary @"$REQUEST_FILE" || true)
+              else
+                HTTP_STATUS=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer $API_KEY" \
+                  -X POST "$API_URL" \
+                  --data-binary @"$REQUEST_FILE" || true)
+              fi
+
+              case "$HTTP_STATUS" in
+                2??)
+                  SUCCESS="true"
+                  break
+                  ;;
+                429|500|502|503|504|000)
+                  jq -c '.error // .' "$RESPONSE_FILE" 2>/dev/null || true
+                  if test "$ATTEMPT" -lt 9; then
+                    sleep "$WAIT_SECONDS"
+                    WAIT_SECONDS=$((WAIT_SECONDS * 2))
+                    if test "$WAIT_SECONDS" -gt 120; then WAIT_SECONDS=120; fi
+                  fi
+                  ;;
+                *)
+                  jq '.' "$RESPONSE_FILE" 2>/dev/null || true
+                  return 1
+                  ;;
+              esac
+            done
+
+            test "$SUCCESS" = "true" || return 1
+
+            if test "$AI_PROVIDER" = "gemini"; then
+              jq -er '.candidates[0].content.parts | map(.text // "") | join("")' \
+                "$RESPONSE_FILE" > "$OUTPUT_FILE"
+            else
+              jq -er '.choices[0].message.content' \
+                "$RESPONSE_FILE" > "$OUTPUT_FILE"
+            fi
+          }
+
+          case "$AI_PROVIDER" in
+            groq)
+              API_KEY="$GROQ_API_KEY"
+              API_URL="${AI_BASE_URL%/}/chat/completions"
+              ;;
+            openrouter)
+              API_KEY="$OPENROUTER_API_KEY"
+              API_URL="${AI_BASE_URL%/}/chat/completions"
+              ;;
+            cerebras)
+              API_KEY="$CEREBRAS_API_KEY"
+              API_URL="${AI_BASE_URL%/}/chat/completions"
+              ;;
+            gemini)
+              API_KEY="$GEMINI_API_KEY"
+              API_URL="https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${API_KEY}"
+              ;;
+          esac
+
+          call_ai
+
+          sed -i '1{/^```markdown$/d;}' "$OUTPUT_FILE"
+          sed -i '${/^```$/d;}' "$OUTPUT_FILE"
+
+          test -s "$OUTPUT_FILE"
+
+          echo "README generated."
+
+      - name: Generate updated CHANGELOG
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          CURRENT_TAG: ${{ steps.release.outputs.current_tag }}
+        run: |
+          set -euo pipefail
+
+          PROMPT_FILE=".release-docs/changelog-prompt.txt"
+          OUTPUT_FILE=".release-docs/CHANGELOG.new.md"
+
+          {
+            cat <<'PROMPT'
+          You are a senior Ruby gem release manager.
+
+          Update the complete CHANGELOG.md.
+
+          SOURCE OF TRUTH:
+          The implementation summary was created from the lib/ diff.
+          It is the only authority for new release claims.
+
+          RULES:
+          - Return the COMPLETE CHANGELOG.md.
+          - Add the new release section at the very top.
+          - Use exactly this heading format: ## [VERSION]
+          - Replace VERSION with the supplied release version.
+          - Include only user-facing changes supported by the summary.
+          - Exclude tests-only, CI, workflows, linting, internal maintenance
+            and repository-only changes.
+          - Preserve all historical entries exactly as far as possible.
+          - Do not delete or rewrite historical release sections.
+          - Do not invent features or bug fixes.
+          - Return only Markdown content.
+          - Do not wrap the response in Markdown code fences.
+          PROMPT
+
+            printf '\n\nCURRENT RELEASE VERSION: %s\n' "$VERSION"
+            printf '\nCURRENT RELEASE TAG: %s\n' "$CURRENT_TAG"
+
+            printf '\n\n========== IMPLEMENTATION SUMMARY ==========\n'
+            cat .release-docs/implementation-summary.txt
+
+            printf '\n\n========== EXISTING CHANGELOG ==========\n'
+            cat .release-docs/CHANGELOG.original.md
+          } > "$PROMPT_FILE"
+
+          echo "Waiting 65 seconds before CHANGELOG generation..."
+          sleep 65
+
+          if test "$AI_PROVIDER" = "gemini"; then
+            API_KEY="$GEMINI_API_KEY"
+            API_URL="https://generativelanguage.googleapis.com/v1beta/models/${AI_MODEL}:generateContent?key=${API_KEY}"
+          else
+            case "$AI_PROVIDER" in
+              groq) API_KEY="$GROQ_API_KEY" ;;
+              openrouter) API_KEY="$OPENROUTER_API_KEY" ;;
+              cerebras) API_KEY="$CEREBRAS_API_KEY" ;;
+            esac
+            API_URL="${AI_BASE_URL%/}/chat/completions"
+          fi
+
+          REQUEST_FILE=".release-docs/request.json"
+          RESPONSE_FILE=".release-docs/response.json"
+
+          if test "$AI_PROVIDER" = "gemini"; then
+            jq -n \
+              --rawfile prompt "$PROMPT_FILE" \
+              '{
+                contents:[{role:"user",parts:[{text:$prompt}]}],
+                generationConfig:{temperature:0.2,maxOutputTokens:8192}
+              }' > "$REQUEST_FILE"
+          else
+            jq -n \
+              --arg model "$AI_MODEL" \
+              --rawfile prompt "$PROMPT_FILE" \
+              '{
+                model:$model,
+                messages:[
+                  {
+                    role:"system",
+                    content:"Return only the complete requested CHANGELOG Markdown."
+                  },
+                  {
+                    role:"user",
+                    content:$prompt
+                  }
+                ],
+                temperature:0.2,
+                max_tokens:8192
+              }' > "$REQUEST_FILE"
+          fi
+
+          SUCCESS="false"
+          WAIT_SECONDS=10
+
+          for ATTEMPT in $(seq 1 9); do
+            echo "CHANGELOG generation attempt $ATTEMPT/9"
+
+            if test "$AI_PROVIDER" = "gemini"; then
+              HTTP_STATUS=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+                -H "Content-Type: application/json" \
+                -X POST "$API_URL" \
+                --data-binary @"$REQUEST_FILE" || true)
+            else
+              HTTP_STATUS=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $API_KEY" \
+                -X POST "$API_URL" \
+                --data-binary @"$REQUEST_FILE" || true)
+            fi
+
+            case "$HTTP_STATUS" in
+              2??)
+                SUCCESS="true"
+                break
+                ;;
+              429|500|502|503|504|000)
+                jq -c '.error // .' "$RESPONSE_FILE" 2>/dev/null || true
+                if test "$ATTEMPT" -lt 9; then
+                  sleep "$WAIT_SECONDS"
+                  WAIT_SECONDS=$((WAIT_SECONDS * 2))
+                  if test "$WAIT_SECONDS" -gt 120; then WAIT_SECONDS=120; fi
+                fi
+                ;;
+              *)
+                jq '.' "$RESPONSE_FILE" 2>/dev/null || true
+                exit 1
+                ;;
+            esac
+          done
+
+          if test "$SUCCESS" != "true"; then
+            echo "CHANGELOG generation failed."
+            exit 1
+          fi
+
+          if test "$AI_PROVIDER" = "gemini"; then
+            jq -er '.candidates[0].content.parts | map(.text // "") | join("")' \
+              "$RESPONSE_FILE" > "$OUTPUT_FILE"
+          else
+            jq -er '.choices[0].message.content' \
+              "$RESPONSE_FILE" > "$OUTPUT_FILE"
+          fi
+
+          sed -i '1{/^```markdown$/d;}' "$OUTPUT_FILE"
+          sed -i '${/^```$/d;}' "$OUTPUT_FILE"
+
+          test -s "$OUTPUT_FILE"
+
+          echo "CHANGELOG generated."
+
+      - name: Validate generated documentation
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          README=".release-docs/README.new.md"
+          CHANGELOG=".release-docs/CHANGELOG.new.md"
+
+          test -s "$README"
+          test -s "$CHANGELOG"
+
+          NEW_HEADING="## [$VERSION]"
+
+          if ! grep -Fqx "$NEW_HEADING" "$CHANGELOG"; then
+            echo "Missing changelog heading: $NEW_HEADING"
+            exit 1
+          fi
+
+          OLD_README_SIZE=$(wc -c < .release-docs/README.original.md)
+          NEW_README_SIZE=$(wc -c < "$README")
+
+          OLD_CHANGELOG_SIZE=$(wc -c < .release-docs/CHANGELOG.original.md)
+          NEW_CHANGELOG_SIZE=$(wc -c < "$CHANGELOG")
+
+          if test "$NEW_README_SIZE" -lt "$((OLD_README_SIZE / 2))"; then
+            echo "README unexpectedly smaller than half of original."
+            exit 1
+          fi
+
+          if test "$NEW_CHANGELOG_SIZE" -lt "$((OLD_CHANGELOG_SIZE / 2))"; then
+            echo "CHANGELOG unexpectedly smaller than half of original."
+            exit 1
+          fi
+
+          grep -E '^## \[' .release-docs/CHANGELOG.original.md |
+          while IFS= read -r HEADING; do
+            if ! grep -Fqx -- "$HEADING" "$CHANGELOG"; then
+              echo "Historical changelog heading missing: $HEADING"
+              exit 1
+            fi
+          done
+
+          echo "Documentation validation passed."
+
+      - name: Apply documentation changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp .release-docs/README.new.md README.md
+          cp .release-docs/CHANGELOG.new.md CHANGELOG.md
+
+          git diff --check
+
+      - name: Create documentation pull request
+        id: create-pr
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           base: ${{ github.event.repository.default_branch }}
-          branch: docs/release-${{ inputs.release_tag || github.ref_name }}
+          branch: docs/update-release-${{ steps.release.outputs.version }}
           delete-branch: true
           add-paths: |
             README.md
             CHANGELOG.md
-          commit-message: "docs: update release documentation for ${{ inputs.release_tag || github.ref_name }}"
-          title: "docs: release documentation for ${{ inputs.release_tag || github.ref_name }}"
+          commit-message: "docs: update release documentation for ${{ steps.release.outputs.version }}"
+          title: "docs: update release documentation for ${{ steps.release.outputs.version }}"
           body: |
-            ## Release documentation update
+            ## Release Documentation Update
 
-            Automatically generated documentation for `${{ inputs.release_tag || github.ref_name }}`.
+            Automated documentation update for `${{ steps.release.outputs.current_tag }}`.
 
-            ### Changes
-            - Analyzed actual `lib/` source changes.
-            - Used specs as supporting evidence.
-            - Updated README and CHANGELOG.
-            - Validated generated documentation.
+            Previous release: `${{ steps.release.outputs.previous_tag }}`
 
-            Please review the changes before merging.
+            ### Source of truth
+            - lib/ diff: authoritative implementation changes.
+            - spec/ diff: reference only.
 
-            This PR is not automatically merged.
+            ### Updated files
+            - README.md
+            - CHANGELOG.md
+
+            Provider: `${{ env.AI_PROVIDER }}`
+            Model: `${{ env.AI_MODEL }}`
+
+            Please review before merging.
+          labels: |
+            documentation
+
+      - name: Workflow summary
+        if: always()
+        shell: bash
+        env:
+          PR_URL: ${{ steps.create-pr.outputs.pull-request-url }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PREVIOUS_TAG: ${{ steps.release.outputs.previous_tag }}
+        run: |
+          {
+            echo "## Release Documentation"
+            echo
+            echo "- Provider: \`$AI_PROVIDER\`"
+            echo "- Model: \`$AI_MODEL\`"
+            echo "- Release: \`$VERSION\`"
+            echo "- Previous release: \`$PREVIOUS_TAG\`"
+            echo "- Pull request: ${PR_URL:-Not created}"
+          } >> "$GITHUB_STEP_SUMMARY"
