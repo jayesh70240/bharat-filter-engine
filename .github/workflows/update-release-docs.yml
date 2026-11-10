@@ -46,7 +46,7 @@ jobs:
 
           RELEASE_TAG="${INPUT_TAG:-$PUSH_TAG}"
 
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          if ! printf '%s\n' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "Invalid stable release tag: $RELEASE_TAG"
             exit 1
           fi
@@ -55,41 +55,35 @@ jobs:
 
           VERSION="${RELEASE_TAG#v}"
 
-          mapfile -t TAGS < <(
-            git tag --list 'v[0-9]*' --sort=version:refname |
-            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true
-          )
+          TAGS=$(git tag --list 'v[0-9]*' --sort=version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
 
-          TARGET_INDEX=-1
-
-          for i in "${!TAGS[@]}"; do
-            if [[ "${TAGS[$i]}" == "$RELEASE_TAG" ]]; then
-              TARGET_INDEX=$i
-              break
-            fi
-          done
-
-          if [[ "$TARGET_INDEX" -lt 0 ]; then
+          if ! printf '%s\n' "$TAGS" | grep -Fxq "$RELEASE_TAG"; then
             echo "Release tag not found: $RELEASE_TAG"
             exit 1
           fi
 
-          PREVIOUS_TAG=""
+          PREVIOUS_TAG=$(printf '%s\n' "$TAGS" | awk -v target="$RELEASE_TAG" '
+            $0 == target {
+              print previous
+              exit
+            }
+            {
+              previous = $0
+            }
+          ')
 
-          if [[ "$TARGET_INDEX" -gt 0 ]]; then
-            PREVIOUS_TAG="${TAGS[$((TARGET_INDEX - 1))]}"
-          fi
-
-          if [[ -n "$PREVIOUS_TAG" ]]; then
+          if test -n "$PREVIOUS_TAG"; then
             BASE="$PREVIOUS_TAG"
           else
-            BASE="$(git hash-object -t tree /dev/null)"
+            BASE=$(git hash-object -t tree /dev/null)
           fi
 
-          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "previous_tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
-          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          {
+            echo "release_tag=$RELEASE_TAG"
+            echo "version=$VERSION"
+            echo "previous_tag=$PREVIOUS_TAG"
+            echo "base=$BASE"
+          } >> "$GITHUB_OUTPUT"
 
           echo "Release: $RELEASE_TAG"
           echo "Previous release: ${PREVIOUS_TAG:-None}"
@@ -103,13 +97,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! git diff --quiet "$BASE" "$RELEASE_TAG" -- lib/; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          else
+          if git diff --quiet "$BASE" "$RELEASE_TAG" -- lib/; then
             echo "No lib/ changes found for $RELEASE_TAG"
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
 
           git diff --no-ext-diff --unified=80 \
             "$BASE" "$RELEASE_TAG" -- lib/ > lib.diff
@@ -120,12 +114,17 @@ jobs:
           git diff --name-status \
             "$BASE" "$RELEASE_TAG" -- lib/ spec/ > changed-files.txt
 
-          test -s lib.diff
-
-          if [[ ! -f README.md || ! -f CHANGELOG.md ]]; then
-            echo "README.md or CHANGELOG.md is missing"
+          if ! test -s lib.diff; then
+            echo "Implementation diff is empty."
             exit 1
           fi
+
+          if ! test -f README.md || ! test -f CHANGELOG.md; then
+            echo "README.md or CHANGELOG.md is missing."
+            exit 1
+          fi
+
+          echo "Implementation and reference diffs generated."
 
       - name: Prepare Gemini documentation prompt
         if: steps.changes.outputs.has_changes == 'true'
@@ -141,8 +140,8 @@ jobs:
             cat <<EOF
           You are a senior Ruby and Ruby on Rails gem maintainer.
 
-          Your task is to update the complete README.md and CHANGELOG.md
-          for the Bharat Filter Engine gem.
+          Update the complete README.md and CHANGELOG.md for
+          the Bharat Filter Engine gem.
 
           RELEASE INFORMATION
           Current release: $RELEASE_TAG
@@ -151,56 +150,55 @@ jobs:
 
           SOURCE OF TRUTH RULES
 
-          1. lib/ DIFF IS THE ONLY SOURCE OF TRUTH.
-             - Understand actual implementation changes from lib/.
-             - Determine real public APIs, parameters, defaults,
-               accepted values, operators and behaviour from lib/.
-             - Document only behaviour actually supported by lib/.
-             - Do not invent features or APIs.
+          1. lib/ IS THE ONLY SOURCE OF TRUTH.
 
-          2. spec/ DIFF IS REFERENCE ONLY.
-             - Use specs only to understand intended usage and
-               cross-check implementation behaviour.
-             - Specs must NOT be treated as proof that a feature
-               exists in the public implementation.
-             - Never document a behaviour only because a spec tests it.
-             - If spec/ and lib/ conflict, ALWAYS follow lib/.
-             - Do not describe spec-only changes as release features.
+          - Analyze actual implementation changes in lib/.
+          - Determine public APIs, parameters, defaults, accepted values,
+            operators, separators and behaviour from lib/.
+          - Document only behaviour actually supported by lib/.
+          - Never invent APIs, features or behaviour.
 
-          3. README.md IS EXISTING DOCUMENTATION.
-             - Update the COMPLETE README.
-             - Preserve valid existing sections and useful explanations.
-             - Update every outdated example and explanation affected
-               by implementation changes.
-             - Update parameter names, defaults, accepted values,
-               separators, operators, syntax and return behaviour
-               wherever they are affected.
-             - For example, if implementation changes a separator
-               from comma to pipe, update all affected README examples.
-             - Do not blindly append a new section instead of updating
-               existing documentation.
-             - Do not remove unrelated valid documentation.
+          2. spec/ IS REFERENCE ONLY.
 
-          4. CHANGELOG.md IS HISTORICAL DOCUMENTATION.
-             - Preserve all existing release entries and their content.
-             - Add a new entry for [$VERSION] at the top.
-             - Include only user-facing changes supported by lib/.
-             - Explain meaningful behaviour changes, additions,
-               fixes and breaking changes.
-             - Do not include CI, GitHub Actions, linting,
-               workflow or repository maintenance changes.
-             - Do not invent changes.
+          - Use spec/ only to understand intended usage and cross-check
+            implementation behaviour.
+          - Specs are not proof that a public feature exists.
+          - Never document behaviour only because a spec tests it.
+          - If spec/ and lib/ conflict, always follow lib/.
+          - Never describe spec-only changes as release features.
 
-          5. OUTPUT REQUIREMENTS
-             - Return the COMPLETE README.md.
-             - Return the COMPLETE CHANGELOG.md.
-             - Do not return snippets, summaries or patches.
-             - Do not use Markdown code fences around the JSON.
-             - Return valid JSON with exactly these two string keys:
-               {
-                 "readme": "complete README content",
-                 "changelog": "complete CHANGELOG content"
-               }
+          3. README.md
+
+          - Return the complete updated README.
+          - Preserve valid existing sections and explanations.
+          - Update all outdated examples affected by lib/ changes.
+          - Update parameter names, defaults, accepted values,
+            separators, operators, syntax and return behaviour.
+          - If a separator changes from comma to pipe, update all
+            affected examples throughout the README.
+          - Do not simply append a new section instead of updating
+            existing documentation.
+          - Do not remove unrelated valid documentation.
+
+          4. CHANGELOG.md
+
+          - Preserve all existing historical release entries.
+          - Add a new entry for [$VERSION] at the top.
+          - Include only user-facing changes supported by lib/.
+          - Explain meaningful additions, fixes, behaviour changes
+            and breaking changes.
+          - Exclude CI, GitHub Actions, linting, workflow and
+            repository maintenance changes.
+          - Do not invent changes.
+
+          5. OUTPUT FORMAT
+
+          - Return complete README.md content.
+          - Return complete CHANGELOG.md content.
+          - Do not return snippets or patches.
+          - Do not wrap the JSON in Markdown code fences.
+          - Return valid JSON with exactly two string keys:
+            readme and changelog.
 
           IMPLEMENTATION DIFF (PRIMARY SOURCE)
           ====================================
@@ -214,7 +212,7 @@ jobs:
           ================================================
           EOF
 
-            if [[ -s specs.diff ]]; then
+            if test -s specs.diff; then
               cat specs.diff
             else
               echo "No spec changes."
@@ -243,18 +241,24 @@ jobs:
           EOF
 
             cat CHANGELOG.md
+
           } > prompt.txt
+
+          echo "Gemini prompt prepared."
 
       - name: Generate documentation with Gemini
         if: steps.changes.outputs.has_changes == 'true'
         shell: bash
-        env:
-          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
         run: |
           set -euo pipefail
 
-          if [[ -z "$GEMINI_API_KEY" ]]; then
-            echo "GEMINI_API_KEY secret is missing"
+          if test -z "$GEMINI_API_KEY"; then
+            echo "GEMINI_API_KEY secret is missing."
+            exit 1
+          fi
+
+          if test -z "$GEMINI_MODEL"; then
+            echo "GEMINI_MODEL repository variable is missing."
             exit 1
           fi
 
@@ -278,23 +282,54 @@ jobs:
 
           API_URL="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent"
 
-          curl \
-            --silent \
-            --show-error \
-            --fail-with-body \
-            --retry 3 \
-            --retry-delay 5 \
-            -X POST "$API_URL" \
-            -H "Content-Type: application/json" \
-            -H "x-goog-api-key: $GEMINI_API_KEY" \
-            -d @request.json \
-            -o response.json
+          SUCCESS=false
+
+          for ATTEMPT in $(seq 1 9); do
+            echo "Gemini API attempt $ATTEMPT/9"
+
+            HTTP_STATUS=$(curl \
+              --silent \
+              --show-error \
+              -X POST "$API_URL" \
+              -H "Content-Type: application/json" \
+              -H "x-goog-api-key: $GEMINI_API_KEY" \
+              -d @request.json \
+              -o response.json \
+              -w "%{http_code}" || true)
+
+            case "$HTTP_STATUS" in
+              2??)
+                SUCCESS=true
+                echo "Gemini API request successful."
+                break
+                ;;
+              429|500|502|503|504|000)
+                echo "Temporary Gemini API error: HTTP $HTTP_STATUS"
+
+                if test "$ATTEMPT" -lt 9; then
+                  echo "Retrying after 10 seconds..."
+                  sleep 10
+                fi
+                ;;
+              *)
+                echo "Gemini API returned HTTP $HTTP_STATUS"
+                cat response.json 2>/dev/null || true
+                exit 1
+                ;;
+            esac
+          done
+
+          if test "$SUCCESS" != "true"; then
+            echo "Gemini API failed after 9 attempts."
+            cat response.json 2>/dev/null || true
+            exit 1
+          fi
 
           jq -e '
             (.candidates | length) > 0 and
             (.candidates[0].finishReason == "STOP")
           ' response.json > /dev/null || {
-            echo "Gemini returned no complete response."
+            echo "Gemini did not return a complete response."
             jq '{promptFeedback, candidates: [.candidates[]? | {finishReason, finishMessage}]}' response.json
             exit 1
           }
@@ -317,6 +352,8 @@ jobs:
             exit 1
           }
 
+          echo "Documentation generated successfully."
+
       - name: Validate generated documentation
         if: steps.changes.outputs.has_changes == 'true'
         shell: bash
@@ -328,13 +365,9 @@ jobs:
           jq -r '.readme' generated.json > README.new.md
           jq -r '.changelog' generated.json > CHANGELOG.new.md
 
-          if ! grep -Fq "[$VERSION]" CHANGELOG.new.md; then
-            echo "CHANGELOG is missing the [$VERSION] release entry"
+          if ! grep -Fq "## [$VERSION]" CHANGELOG.new.md; then
+            echo "CHANGELOG is missing the release heading for $VERSION."
             exit 1
-          fi
-
-          if ! grep -Fq "[$VERSION]" CHANGELOG.md; then
-            echo "Existing CHANGELOG has no [$VERSION] entry; verify generated release entry."
           fi
 
           OLD_README_SIZE=$(wc -c < README.md)
@@ -342,27 +375,29 @@ jobs:
           OLD_CHANGELOG_SIZE=$(wc -c < CHANGELOG.md)
           NEW_CHANGELOG_SIZE=$(wc -c < CHANGELOG.new.md)
 
-          if (( NEW_README_SIZE < OLD_README_SIZE / 2 )); then
-            echo "Generated README is unexpectedly smaller than the original."
+          if test "$NEW_README_SIZE" -lt "$((OLD_README_SIZE / 2))"; then
+            echo "Generated README is unexpectedly smaller."
             exit 1
           fi
 
-          if (( NEW_CHANGELOG_SIZE < OLD_CHANGELOG_SIZE / 2 )); then
-            echo "Generated CHANGELOG is unexpectedly smaller than the original."
+          if test "$NEW_CHANGELOG_SIZE" -lt "$((OLD_CHANGELOG_SIZE / 2))"; then
+            echo "Generated CHANGELOG is unexpectedly smaller."
             exit 1
           fi
 
           while IFS= read -r heading; do
-            [[ -z "$heading" ]] && continue
-
-            if ! grep -Fqx -- "$heading" CHANGELOG.new.md; then
-              echo "Existing CHANGELOG heading was removed: $heading"
-              exit 1
+            if test -n "$heading"; then
+              if ! grep -Fqx -- "$heading" CHANGELOG.new.md; then
+                echo "Existing CHANGELOG heading was removed: $heading"
+                exit 1
+              fi
             fi
           done < <(grep '^## ' CHANGELOG.md || true)
 
-          test -s README.new.md
-          test -s CHANGELOG.new.md
+          if ! test -s README.new.md || ! test -s CHANGELOG.new.md; then
+            echo "Generated documentation is empty."
+            exit 1
+          fi
 
           echo "Documentation validation passed."
 
@@ -404,12 +439,12 @@ jobs:
             ### Sources
             - `lib/` diff: primary source of truth.
             - `spec/` diff: reference only.
-            - Existing `README.md` and `CHANGELOG.md`: preserved and updated.
+            - Existing README and CHANGELOG: preserved and updated.
 
             ### Changes
             - Updated complete README.
             - Updated CHANGELOG with the release entry.
-            - Preserved existing changelog history.
+            - Preserved historical changelog entries.
 
             Please review the generated documentation before merging.
           add-paths: |
