@@ -20,5 +20,12 @@ Metrics/CyclomaticComplexity:
 Metrics/PerceivedComplexity:
   Max: 200
 
+Layout/LineLength:
+  Max: 210
+
 Style/Documentation:
   Enabled: false
+
+Style/FormatStringToken:
+  Exclude:
+    - 'scripts/generate_release_docs.rb'
