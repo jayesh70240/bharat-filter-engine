@@ -114,38 +114,102 @@ jobs:
         run: |
           set -Eeuo pipefail
 
-          echo '::group::Install Ollama'
-          curl --fail --silent --show-error https://ollama.com/install.sh | sh
-          echo '::endgroup::'
+          mkdir -p .release-docs
 
-          echo '::group::Start Ollama service'
-          if ! curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
-            nohup ollama serve > .release-docs/ollama-server.log 2>&1 &
+          echo "::group::Install Ollama"
+
+          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+
+          curl -fsSL https://ollama.com/install.sh \
+            | tee .release-docs/ollama-install.log \
+            | sh 2>&1
+
+          hash -r
+
+          OLLAMA_BIN="$(command -v ollama || true)"
+
+          if [[ -z "$OLLAMA_BIN" ]]; then
+            for candidate in \
+              /usr/local/bin/ollama \
+              /usr/bin/ollama \
+              /bin/ollama \
+              /opt/ollama/bin/ollama; do
+              if [[ -x "$candidate" ]]; then
+                OLLAMA_BIN="$candidate"
+                break
+              fi
+            done
+          fi
+
+          if [[ -z "$OLLAMA_BIN" ]]; then
+            echo "::error::Ollama binary was not found after installation."
+            echo "Searching common installation directories..."
+
+            find /usr/local /usr/bin /opt \
+              -type f -name ollama -print 2>/dev/null || true
+
+            cat .release-docs/ollama-install.log || true
+            exit 1
+          fi
+
+          echo "Ollama binary: $OLLAMA_BIN"
+          "$OLLAMA_BIN" --version
+
+          echo "$OLLAMA_BIN" > .release-docs/ollama-bin.txt
+
+          echo "$OLLAMA_BIN" >> "$GITHUB_PATH"
+
+          echo "::endgroup::"
+
+          echo "::group::Start Ollama service"
+
+          if ! curl -fsS \
+            http://127.0.0.1:11434/api/tags >/dev/null; then
+
+            nohup "$OLLAMA_BIN" serve \
+              > .release-docs/ollama-server.log 2>&1 < /dev/null &
+
             echo "$!" > .release-docs/ollama.pid
           else
-            echo 'Ollama service was already running.'
+            echo "Ollama is already running."
           fi
 
           ready=false
+
           for attempt in $(seq 1 90); do
-            if curl --fail --silent http://127.0.0.1:11434/api/tags >/dev/null; then
+            if curl -fsS \
+              http://127.0.0.1:11434/api/tags >/dev/null; then
               ready=true
+              echo "Ollama ready after attempt $attempt."
               break
             fi
+
+            if ! kill -0 "$(cat .release-docs/ollama.pid 2>/dev/null)" \
+              2>/dev/null; then
+              echo "Ollama process exited unexpectedly."
+              cat .release-docs/ollama-server.log || true
+              exit 1
+            fi
+
             sleep 2
           done
 
           if [[ "$ready" != true ]]; then
-            echo 'Ollama did not become ready within 180 seconds.'
+            echo "::error::Ollama did not become ready within 180 seconds."
             cat .release-docs/ollama-server.log || true
             exit 1
           fi
-          echo 'Ollama service is ready.'
-          echo '::endgroup::'
 
-          echo '::group::Pull configured Ollama model'
-          ollama pull "$OLLAMA_MODEL" 2>&1 | tee .release-docs/ollama-pull.log
-          echo '::endgroup::'
+          echo "::endgroup::"
+
+          echo "::group::Pull Ollama model"
+
+          "$OLLAMA_BIN" pull "$OLLAMA_MODEL" \
+            2>&1 | tee .release-docs/ollama-pull.log
+
+          echo "::endgroup::"
+
+          echo "Ollama setup completed successfully."
 
       - name: Generate documentation and create pull request
         id: generate
@@ -173,5 +237,7 @@ jobs:
             .release-docs/ollama-server.log
             .release-docs/ollama-pull.log
             .release-docs/manifest.json
+            .release-docs/ollama-install.log
+            .release-docs/ollama-bin.txt
           if-no-files-found: ignore
           retention-days: 14
