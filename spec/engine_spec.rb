@@ -151,6 +151,27 @@ RSpec.describe BharatFilterEngine::Engine do
       expect(result).to contain_exactly(sale)
     end
 
+    it 'raises InvalidFilterError for an invalid date' do
+      config = {
+        actual_sale_date: {
+          type: :single,
+          filter_type: :daterange,
+          dbcolumn: :actual_sale_date
+        }
+      }
+
+      expect do
+        described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { actual_sale_date: { from: 'not-a-date' } }
+        )
+      end.to raise_error(
+        BharatFilterEngine::InvalidFilterError,
+        /invalid date/
+      )
+    end
+
     it 'applies nested filter' do
       config = {
         lead_source: {
@@ -351,6 +372,27 @@ RSpec.describe BharatFilterEngine::Engine do
       )
     end
 
+    it 'preserves commas in search terms' do
+      match = Sale.create!(stage: 'Newark, Liberty')
+      Sale.create!(stage: 'Newark Liberty')
+
+      config = {
+        q: {
+          type: :single,
+          filter_type: :search,
+          dbcolumns: [:stage]
+        }
+      }
+
+      result = described_class.apply(
+        scope: Sale.all,
+        config: config,
+        params: { q: 'Newark, Liberty' }
+      )
+
+      expect(result).to contain_exactly(match)
+    end
+
     it 'filters boolean true values' do
       sale = Sale.create!(
         active: true
@@ -435,6 +477,27 @@ RSpec.describe BharatFilterEngine::Engine do
       expect(result).to contain_exactly(sale)
     end
 
+    it 'does not truncate decimal input for an integer filter' do
+      sale = Sale.create!(amount: 5000)
+      other_sale = Sale.create!(amount: 4000)
+
+      config = {
+        amount: {
+          type: :single,
+          filter_type: :integer,
+          dbcolumn: :amount
+        }
+      }
+
+      result = described_class.apply(
+        scope: Sale.all,
+        config: config,
+        params: { amount: '5000.9' }
+      )
+
+      expect(result).to contain_exactly(sale, other_sale)
+    end
+
     it 'filters an exact integer value of zero' do
       sale = Sale.create!(
         amount: 0
@@ -499,6 +562,51 @@ RSpec.describe BharatFilterEngine::Engine do
       )
     end
 
+    it 'supports western digit grouping in numeric filters' do
+      match = Sale.create!(amount: 5000)
+      above = Sale.create!(amount: 10_000)
+      Sale.create!(amount: 4999)
+
+      config = {
+        amount: {
+          type: :single,
+          filter_type: :integer,
+          dbcolumn: :amount,
+          range_type: :gte
+        }
+      }
+
+      result = described_class.apply(
+        scope: Sale.all,
+        config: config,
+        params: { amount: '5,000' }
+      )
+
+      expect(result).to contain_exactly(match, above)
+    end
+
+    it 'supports Indian digit grouping in numeric filters' do
+      match = Sale.create!(amount: 100_000)
+      Sale.create!(amount: 99_999)
+
+      config = {
+        amount: {
+          type: :single,
+          filter_type: :integer,
+          dbcolumn: :amount,
+          range_type: :gte
+        }
+      }
+
+      result = described_class.apply(
+        scope: Sale.all,
+        config: config,
+        params: { amount: '1,00,000' }
+      )
+
+      expect(result).to contain_exactly(match)
+    end
+
     it 'supports integer less than or equal filter' do
       sale_one = Sale.create!(
         amount: 500
@@ -533,6 +641,28 @@ RSpec.describe BharatFilterEngine::Engine do
         sale_one,
         sale_two
       )
+    end
+
+    it 'supports a comma-separated list for exact numeric filters' do
+      sale_one = Sale.create!(amount: 1)
+      sale_two = Sale.create!(amount: 2)
+      Sale.create!(amount: 3)
+
+      config = {
+        amount: {
+          type: :single,
+          filter_type: :integer,
+          dbcolumn: :amount
+        }
+      }
+
+      result = described_class.apply(
+        scope: Sale.all,
+        config: config,
+        params: { amount: '1,2' }
+      )
+
+      expect(result).to contain_exactly(sale_one, sale_two)
     end
 
     it 'supports integer between filter with a hash' do
@@ -1129,6 +1259,29 @@ RSpec.describe BharatFilterEngine::Engine do
         expect(result).to contain_exactly(sale)
       end
 
+      it 'includes NULL values when negating a scalar value' do
+        sale = Sale.create!(stage: 'new')
+        unknown = Sale.create!(stage: nil)
+        Sale.create!(stage: 'qualified')
+
+        config = {
+          stage: {
+            type: :single,
+            filter_type: :string,
+            dbcolumn: :stage,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { stage: 'qualified' }
+        )
+
+        expect(result).to contain_exactly(sale, unknown)
+      end
+
       it 'excludes matching array values' do
         sale = Sale.create!(approval_status: 'rejected')
         Sale.create!(approval_status: 'approved')
@@ -1150,6 +1303,30 @@ RSpec.describe BharatFilterEngine::Engine do
         )
 
         expect(result).to contain_exactly(sale)
+      end
+
+      it 'includes NULL values when negating an array' do
+        sale = Sale.create!(approval_status: 'rejected')
+        unknown = Sale.create!(approval_status: nil)
+        Sale.create!(approval_status: 'approved')
+        Sale.create!(approval_status: 'pending')
+
+        config = {
+          status: {
+            type: :single,
+            filter_type: :array,
+            dbcolumn: :approval_status,
+            negate: true
+          }
+        }
+
+        result = described_class.apply(
+          scope: Sale.all,
+          config: config,
+          params: { status: %w[approved pending] }
+        )
+
+        expect(result).to contain_exactly(sale, unknown)
       end
 
       it 'excludes matching boolean values' do
