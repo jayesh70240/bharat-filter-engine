@@ -10,20 +10,23 @@ on:
       release_tag:
         description: "Release tag to document"
         required: true
-        default: "v0.2.0"
+        type: string
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: release-docs-${{ github.ref }}
+  group: release-docs-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   update-docs:
-    if: github.repository == 'jayesh70240/bharat-filter-engine'
     runs-on: ubuntu-latest
+
+    env:
+      GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-3.8-flash' }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
     steps:
       - name: Checkout default branch
@@ -32,60 +35,401 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
-      - name: Fetch release tags
-        run: git fetch --force --tags origin
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: pip install -r scripts/docs/requirements.txt
-
-      - name: Analyze release
-        id: analyze
+      - name: Resolve release and previous version
+        id: release
+        shell: bash
         env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          PUSH_TAG: ${{ github.ref_name }}
         run: |
-          python scripts/docs/analyze_release.py
-          HAS_CHANGES=$(python -c "import json; print(str(json.load(open('release-analysis.json'))['has_lib_changes']).lower())")
-          echo "has_changes=$HAS_CHANGES" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
 
-      - name: Generate documentation
-        if: steps.analyze.outputs.has_changes == 'true'
+          RELEASE_TAG="${INPUT_TAG:-$PUSH_TAG}"
+
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid stable release tag: $RELEASE_TAG"
+            exit 1
+          fi
+
+          git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+
+          VERSION="${RELEASE_TAG#v}"
+
+          mapfile -t TAGS < <(
+            git tag --list 'v[0-9]*' --sort=version:refname |
+            grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true
+          )
+
+          TARGET_INDEX=-1
+
+          for i in "${!TAGS[@]}"; do
+            if [[ "${TAGS[$i]}" == "$RELEASE_TAG" ]]; then
+              TARGET_INDEX=$i
+              break
+            fi
+          done
+
+          if [[ "$TARGET_INDEX" -lt 0 ]; then
+            echo "Release tag not found: $RELEASE_TAG"
+            exit 1
+          fi
+
+          PREVIOUS_TAG=""
+
+          if [[ "$TARGET_INDEX" -gt 0 ]]; then
+            PREVIOUS_TAG="${TAGS[$((TARGET_INDEX - 1))]}"
+          fi
+
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            BASE="$PREVIOUS_TAG"
+          else
+            BASE="$(git hash-object -t tree /dev/null)"
+          fi
+
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+
+          echo "Release: $RELEASE_TAG"
+          echo "Previous release: ${PREVIOUS_TAG:-None}"
+
+      - name: Generate implementation and spec diffs
+        id: changes
+        shell: bash
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python scripts/docs/generate_docs.py
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          BASE: ${{ steps.release.outputs.base }}
+        run: |
+          set -euo pipefail
 
-      - name: Validate documentation
-        if: steps.analyze.outputs.has_changes == 'true'
-        run: python scripts/docs/validate_docs.py
+          if ! git diff --quiet "$BASE" "$RELEASE_TAG" -- lib/; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No lib/ changes found for $RELEASE_TAG"
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-      - name: Create documentation PR
-        if: steps.analyze.outputs.has_changes == 'true'
-        uses: peter-evans/create-pull-request@v8
+          git diff --no-ext-diff --unified=80 \
+            "$BASE" "$RELEASE_TAG" -- lib/ > lib.diff
+
+          git diff --no-ext-diff --unified=40 \
+            "$BASE" "$RELEASE_TAG" -- spec/ > specs.diff
+
+          git diff --name-status \
+            "$BASE" "$RELEASE_TAG" -- lib/ spec/ > changed-files.txt
+
+          test -s lib.diff
+
+          if [[ ! -f README.md || ! -f CHANGELOG.md ]]; then
+            echo "README.md or CHANGELOG.md is missing"
+            exit 1
+          fi
+
+      - name: Prepare Gemini documentation prompt
+        if: steps.changes.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PREVIOUS_TAG: ${{ steps.release.outputs.previous_tag }}
+        run: |
+          set -euo pipefail
+
+          {
+            cat <<EOF
+          You are a senior Ruby and Ruby on Rails gem maintainer.
+
+          Your task is to update the complete README.md and CHANGELOG.md
+          for the Bharat Filter Engine gem.
+
+          RELEASE INFORMATION
+          Current release: $RELEASE_TAG
+          Version: $VERSION
+          Previous stable release: ${PREVIOUS_TAG:-First stable release}
+
+          SOURCE OF TRUTH RULES
+
+          1. lib/ DIFF IS THE ONLY SOURCE OF TRUTH.
+             - Understand actual implementation changes from lib/.
+             - Determine real public APIs, parameters, defaults,
+               accepted values, operators and behaviour from lib/.
+             - Document only behaviour actually supported by lib/.
+             - Do not invent features or APIs.
+
+          2. spec/ DIFF IS REFERENCE ONLY.
+             - Use specs only to understand intended usage and
+               cross-check implementation behaviour.
+             - Specs must NOT be treated as proof that a feature
+               exists in the public implementation.
+             - Never document a behaviour only because a spec tests it.
+             - If spec/ and lib/ conflict, ALWAYS follow lib/.
+             - Do not describe spec-only changes as release features.
+
+          3. README.md IS EXISTING DOCUMENTATION.
+             - Update the COMPLETE README.
+             - Preserve valid existing sections and useful explanations.
+             - Update every outdated example and explanation affected
+               by implementation changes.
+             - Update parameter names, defaults, accepted values,
+               separators, operators, syntax and return behaviour
+               wherever they are affected.
+             - For example, if implementation changes a separator
+               from comma to pipe, update all affected README examples.
+             - Do not blindly append a new section instead of updating
+               existing documentation.
+             - Do not remove unrelated valid documentation.
+
+          4. CHANGELOG.md IS HISTORICAL DOCUMENTATION.
+             - Preserve all existing release entries and their content.
+             - Add a new entry for [$VERSION] at the top.
+             - Include only user-facing changes supported by lib/.
+             - Explain meaningful behaviour changes, additions,
+               fixes and breaking changes.
+             - Do not include CI, GitHub Actions, linting,
+               workflow or repository maintenance changes.
+             - Do not invent changes.
+
+          5. OUTPUT REQUIREMENTS
+             - Return the COMPLETE README.md.
+             - Return the COMPLETE CHANGELOG.md.
+             - Do not return snippets, summaries or patches.
+             - Do not use Markdown code fences around the JSON.
+             - Return valid JSON with exactly these two string keys:
+               {
+                 "readme": "complete README content",
+                 "changelog": "complete CHANGELOG content"
+               }
+
+          IMPLEMENTATION DIFF (PRIMARY SOURCE)
+          ====================================
+          EOF
+
+            cat lib.diff
+
+            cat <<'EOF'
+
+          SPEC DIFF (REFERENCE ONLY - NOT SOURCE OF TRUTH)
+          ================================================
+          EOF
+
+            if [[ -s specs.diff ]]; then
+              cat specs.diff
+            else
+              echo "No spec changes."
+            fi
+
+            cat <<'EOF'
+
+          CHANGED FILES
+          =============
+          EOF
+
+            cat changed-files.txt
+
+            cat <<'EOF'
+
+          EXISTING README.md
+          ==================
+          EOF
+
+            cat README.md
+
+            cat <<'EOF'
+
+          EXISTING CHANGELOG.md
+          =====================
+          EOF
+
+            cat CHANGELOG.md
+          } > prompt.txt
+
+      - name: Generate documentation with Gemini
+        if: steps.changes.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$GEMINI_API_KEY" ]]; then
+            echo "GEMINI_API_KEY secret is missing"
+            exit 1
+          fi
+
+          jq -n \
+            --rawfile prompt prompt.txt \
+            '{
+              contents: [
+                {
+                  role: "user",
+                  parts: [
+                    { text: $prompt }
+                  ]
+                }
+              ],
+              generationConfig: {
+                temperature: 0.2,
+                responseMimeType: "application/json",
+                maxOutputTokens: 32768
+              }
+            }' > request.json
+
+          API_URL="https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent"
+
+          curl \
+            --silent \
+            --show-error \
+            --fail-with-body \
+            --retry 3 \
+            --retry-delay 5 \
+            -X POST "$API_URL" \
+            -H "Content-Type: application/json" \
+            -H "x-goog-api-key: $GEMINI_API_KEY" \
+            -d @request.json \
+            -o response.json
+
+          jq -e '
+            (.candidates | length) > 0 and
+            (.candidates[0].finishReason == "STOP")
+          ' response.json > /dev/null || {
+            echo "Gemini returned no complete response."
+            jq '{promptFeedback, candidates: [.candidates[]? | {finishReason, finishMessage}]}' response.json
+            exit 1
+          }
+
+          jq -er '
+            [
+              .candidates[0].content.parts[]?
+              | select(has("text"))
+              | .text
+            ] | join("")
+          ' response.json > generated.json
+
+          jq -e '
+            (.readme | type == "string") and
+            (.readme | length > 500) and
+            (.changelog | type == "string") and
+            (.changelog | length > 100)
+          ' generated.json > /dev/null || {
+            echo "Gemini returned invalid or incomplete documentation."
+            exit 1
+          }
+
+      - name: Validate generated documentation
+        if: steps.changes.outputs.has_changes == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          jq -r '.readme' generated.json > README.new.md
+          jq -r '.changelog' generated.json > CHANGELOG.new.md
+
+          if ! grep -Fq "[$VERSION]" CHANGELOG.new.md; then
+            echo "CHANGELOG is missing the [$VERSION] release entry"
+            exit 1
+          fi
+
+          if ! grep -Fq "[$VERSION]" CHANGELOG.md; then
+            echo "Existing CHANGELOG has no [$VERSION] entry; verify generated release entry."
+          fi
+
+          OLD_README_SIZE=$(wc -c < README.md)
+          NEW_README_SIZE=$(wc -c < README.new.md)
+          OLD_CHANGELOG_SIZE=$(wc -c < CHANGELOG.md)
+          NEW_CHANGELOG_SIZE=$(wc -c < CHANGELOG.new.md)
+
+          if (( NEW_README_SIZE < OLD_README_SIZE / 2 )); then
+            echo "Generated README is unexpectedly smaller than the original."
+            exit 1
+          fi
+
+          if (( NEW_CHANGELOG_SIZE < OLD_CHANGELOG_SIZE / 2 )); then
+            echo "Generated CHANGELOG is unexpectedly smaller than the original."
+            exit 1
+          fi
+
+          while IFS= read -r heading; do
+            [[ -z "$heading" ]] && continue
+
+            if ! grep -Fqx -- "$heading" CHANGELOG.new.md; then
+              echo "Existing CHANGELOG heading was removed: $heading"
+              exit 1
+            fi
+          done < <(grep '^## ' CHANGELOG.md || true)
+
+          test -s README.new.md
+          test -s CHANGELOG.new.md
+
+          echo "Documentation validation passed."
+
+      - name: Apply documentation changes
+        if: steps.changes.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mv README.new.md README.md
+          mv CHANGELOG.new.md CHANGELOG.md
+
+          git diff --check
+
+          git add README.md CHANGELOG.md
+
+          if git diff --cached --quiet; then
+            echo "No documentation changes generated."
+            exit 1
+          fi
+
+          git diff --cached --stat
+
+      - name: Create documentation pull request
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           base: ${{ github.event.repository.default_branch }}
-          branch: docs/release-${{ inputs.release_tag || github.ref_name }}
+          branch: docs/release-${{ steps.release.outputs.version }}
           delete-branch: true
+          commit-message: "docs: update documentation for ${{ steps.release.outputs.release_tag }}"
+          title: "docs: update documentation for ${{ steps.release.outputs.release_tag }}"
+          body: |
+            ## Release Documentation Update
+
+            Automated documentation update for **${{ steps.release.outputs.release_tag }}**.
+
+            ### Sources
+            - `lib/` diff: primary source of truth.
+            - `spec/` diff: reference only.
+            - Existing `README.md` and `CHANGELOG.md`: preserved and updated.
+
+            ### Changes
+            - Updated complete README.
+            - Updated CHANGELOG with the release entry.
+            - Preserved existing changelog history.
+
+            Please review the generated documentation before merging.
           add-paths: |
             README.md
             CHANGELOG.md
-          commit-message: "docs: update release documentation for ${{ inputs.release_tag || github.ref_name }}"
-          title: "docs: release documentation for ${{ inputs.release_tag || github.ref_name }}"
-          body: |
-            ## Release documentation update
 
-            Automatically generated documentation for `${{ inputs.release_tag || github.ref_name }}`.
-
-            ### Changes
-            - Analyzed actual `lib/` source changes.
-            - Used specs as supporting evidence.
-            - Updated README and CHANGELOG.
-            - Validated generated documentation.
-
-            Please review the changes before merging.
-
-            This PR is not automatically merged.
+      - name: Job summary
+        if: always()
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          CHANGE_STATUS: ${{ steps.changes.outputs.has_changes }}
+        run: |
+          {
+            echo "## Release Documentation"
+            echo ""
+            echo "- Release: ${RELEASE_TAG:-Not resolved}"
+            echo "- Implementation changes: ${CHANGE_STATUS:-Not checked}"
+            echo "- Specs: Reference only"
+            echo "- Documentation: README.md and CHANGELOG.md"
+            echo "- Python fallback: Disabled"
+            echo "- Auto-merge: Disabled"
+          } >> "$GITHUB_STEP_SUMMARY"
