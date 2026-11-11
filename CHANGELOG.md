@@ -1,5 +1,3 @@
-
-```markdown
 # Changelog
 
 All notable changes to this project will be documented here.
@@ -59,4 +57,3 @@ All notable changes to this project will be documented here.
 - AND / OR search.
 - Dynamic filter values.
 - Legacy filter configuration support.
-```
