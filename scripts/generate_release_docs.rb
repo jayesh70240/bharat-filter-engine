@@ -121,7 +121,9 @@ class ReleaseDocumentation
     else
       implementation_summary = 'No user-facing implementation changes were identified.'
       File.write(path('implementation-summary.md'), implementation_summary)
-      log(:info, 'No lib/ implementation changes found; AI analysis skipped. Version badge and changelog formatting will still be checked.')
+      log(:info,
+          'No lib/ implementation changes found; AI analysis skipped. ' \
+          'Version badge and changelog formatting will still be checked.')
     end
     @generated_readme = generate_readme(implementation_summary)
     @generated_changelog = generate_changelog(implementation_summary)
@@ -476,7 +478,8 @@ class ReleaseDocumentation
     duplicate_headings = headings.group_by(&:itself).select { |_heading, values| values.length > 1 }.keys
     unless duplicate_headings.empty?
       raise Error,
-            "README contains duplicate level-two section headings; cannot safely target them: #{duplicate_headings.join(', ')}."
+            'README contains duplicate level-two section headings; cannot safely target them: ' \
+            "#{duplicate_headings.join(', ')}."
     end
 
     selection_context = readme_selection_context(sections, max_chars: 3_500)
@@ -758,7 +761,7 @@ class ReleaseDocumentation
   end
 
   def summary_has_no_user_facing_changes?(summary)
-    summary.to_s.match?(/\A(?:NO USER-FACING CHANGE|No user-facing implementation changes were identified\.?)\s*\z/i)
+    summary.to_s.match?(/\A(?:NO USER-FACING CHANGE|No user-facing implementation changes were identified)\.?\s*\z/i)
   end
 
   def unwrap_outer_markdown_fence(markdown)
@@ -767,7 +770,9 @@ class ReleaseDocumentation
     return markdown unless lines.first.match?(/\A```(?:markdown|md)?\s*\r?\n?\z/i)
     return markdown unless lines.last.strip == '```'
 
-    log(:warn, 'CHANGELOG.md is wrapped in an outer Markdown fence; removing only that wrapper while preserving its contents.')
+    log(:warn,
+        'CHANGELOG.md is wrapped in an outer Markdown fence; removing only that wrapper ' \
+        'while preserving its contents.')
     lines[1...-1].join
   end
 
@@ -785,12 +790,59 @@ class ReleaseDocumentation
       @changelog_entry = nil
       return original
     end
+
     heading = "## [#{@version}] - #{@release_date}"
-    prompt = <<~PROMPT
+    entry = nil
+
+    begin
+      entry = clean_markdown(
+        ask_ai(changelog_prompt(summary, heading),
+               max_output_tokens: CHANGELOG_OUTPUT_TOKENS,
+               purpose: 'CHANGELOG entry')
+      )
+    rescue Error => e
+      log(:warn, "AI CHANGELOG generation failed; using the validated implementation summary: #{redact(e.message)}")
+    end
+
+    if entry.nil? || none_ai_response?(entry)
+      log(:warn,
+          'AI returned NONE despite a non-empty user-facing implementation summary; formatting the summary directly.')
+      entry = fallback_changelog_entry(summary, heading)
+    else
+      violations = changelog_internal_violations(entry)
+      unless violations.empty?
+        log(:warn,
+            "AI CHANGELOG draft contains internal-detail markers (#{violations.join(', ')}); " \
+            'formatting the validated implementation summary directly.')
+        entry = fallback_changelog_entry(summary, heading)
+      end
+    end
+
+    begin
+      validate_changelog_entry!(entry, heading)
+    rescue Error => e
+      log(:warn, "AI CHANGELOG draft failed validation; using deterministic fallback: #{e.message}")
+      entry = fallback_changelog_entry(summary, heading)
+      validate_changelog_entry!(entry, heading)
+    end
+
+    @changelog_entry = entry.rstrip
+    insert_changelog_entry(original, @changelog_entry)
+  end
+
+  def none_ai_response?(value)
+    value.to_s.strip.match?(/\A["']?NONE[.!]?["']?\z/i)
+  end
+
+  def changelog_prompt(summary, heading)
+    <<~PROMPT
       You are preparing concise, user-facing release notes for the Ruby gem Bharat Filter Engine.
 
       Generate ONLY the new CHANGELOG entry. The first line must be exactly:
       #{heading}
+
+      The implementation summary below has already been reviewed and contains user-facing changes.
+      You MUST produce release notes from those changes. Do not return NONE or an empty response.
 
       Use only facts supported by this implementation summary, which was derived from the lib/ diff.
       The spec/ diff is not evidence and must not be used for claims.
@@ -799,12 +851,9 @@ class ReleaseDocumentation
       Include only changes that matter to a gem user: new capabilities, changed behavior,
       bug fixes, public API changes, accepted options, defaults, or breaking changes.
 
-      Do NOT include:
-      - Private/helper method names, internal classes, instance variables, constants or trackers.
-      - Refactoring details, implementation steps, code organization or future-use placeholders.
-      - Spec/test/CI/workflow/linting changes or repository maintenance.
-      - A list of every method that changed.
-      - Unsupported claims or guessed behavior.
+      Do NOT include private/helper method names, internal classes, instance variables,
+      constants, trackers, refactoring details, implementation steps, tests, CI, workflows,
+      linting or repository maintenance.
 
       Describe outcomes in plain language. Mention a public API name only when a user needs it
       to understand how to use a new or changed capability. Combine duplicate points.
@@ -817,25 +866,127 @@ class ReleaseDocumentation
 
       Put concise bullets under the categories. Do not use code fences. Do not include a top-level
       '# Changelog' heading or historical releases. Do not include dates other than the date in
-      the required first line. If there are no user-facing changes, return exactly NONE.
+      the required first line. Never return NONE: a deterministic fallback will be used if you
+      cannot draft the entry.
 
       IMPLEMENTATION SUMMARY:
       #{summary}
     PROMPT
-    entry = clean_markdown(ask_ai(prompt, max_output_tokens: CHANGELOG_OUTPUT_TOKENS,
-                                          purpose: 'CHANGELOG entry'))
-    raise Error, 'AI returned NONE even though user-facing implementation changes were identified.' if entry.casecmp('NONE').zero?
+  end
 
-    violations = changelog_internal_violations(entry)
-    unless violations.empty?
-      log(:warn,
-          "CHANGELOG draft contains internal-detail markers (#{violations.join(', ')}); requesting one cleanup pass.")
-      entry = repair_changelog_entry(entry, summary, heading, violations)
+  def fallback_changelog_entry(summary, heading)
+    bullets = changelog_summary_bullets(summary)
+    if bullets.empty?
+      raise Error,
+            'The implementation summary contains no usable user-facing bullets; cannot safely build CHANGELOG.'
     end
 
-    validate_changelog_entry!(entry, heading)
-    @changelog_entry = entry.rstrip
-    insert_changelog_entry(original, @changelog_entry)
+    grouped = { 'Added' => [], 'Changed' => [], 'Fixed' => [], 'Breaking Changes' => [] }
+    bullets.each do |bullet|
+      category = changelog_category_for(bullet)
+      grouped.fetch(category) << bullet
+    end
+
+    lines = [heading]
+    grouped.each do |category, items|
+      next if items.empty?
+
+      lines << ''
+      lines << "### #{category}"
+      items.each { |item| lines << "- #{item}" }
+    end
+
+    log(:info, "Built deterministic CHANGELOG fallback from #{bullets.length} implementation-summary bullet(s).")
+    lines.join("\n")
+  end
+
+  def changelog_summary_bullets(summary)
+    content = clean_markdown(summary.to_s)
+    return [] if summary_has_no_user_facing_changes?(content)
+
+    bullets = []
+    current = nil
+
+    content.each_line do |raw_line|
+      line = raw_line.strip
+      next if line.empty?
+      next if line.match?(/\A(?:\#{1,6}\s+|```|~~~)/)
+      next if line.match?(/\A(?:implementation summary|user-facing changes|summary)\s*:?\z/i)
+      next if line.match?(/\ANO USER-FACING CHANGE\.?\z/i)
+
+      if line.match?(/\A[-*•]\s+/)
+        bullets << current if current
+        current = line.sub(/\A[-*•]\s+/, '').strip
+      elsif current
+        current = "#{current} #{line}"
+      else
+        current = line
+      end
+    end
+    bullets << current if current
+
+    bullets.filter_map do |bullet|
+      sanitize_changelog_summary_bullet(bullet)
+    end.uniq
+  end
+
+  def sanitize_changelog_summary_bullet(bullet)
+    value = bullet.to_s.dup
+    internal_identifier = /
+      \b(?:
+        ColumnHelper|JoinTracker|apply_subquery_group|apply_rule|apply_array_filter|
+        apply_boolean_filter|apply_filter_by_type|apply_presence_filter|apply_condition|
+        apply_negated_array_condition|apply_numeric_between|numeric_string|cast_numeric|
+        extract_bounds|like_query|field_based_search|nested_condition
+      )\b
+    /x
+
+    value.gsub!(/`([^`]+)`/) do |token|
+      inner = token[1...-1]
+      inner.match?(internal_identifier) || inner.match?(/\A@[A-Za-z_]\w*\z/) ? '' : token
+    end
+    value.gsub!(internal_identifier, '')
+    value.gsub!(/numeric pattern constant|future use|no user-facing changes were made/i, '')
+    value.gsub!(/\b(?:private|internal)\s+(?:helper|implementation)\s+(?:method|class|constant|detail)\b/i, '')
+    value.gsub!(/\s+/, ' ')
+    value.gsub!(/\s+([,.;:])/, '\\1')
+    value = value.strip.sub(/[.\s]+\z/, '')
+
+    return if value.empty?
+
+    implementation_only = /
+      \A(?:
+        refactor(?:s|ed|ing)?(?:\s+helper)?|
+        reorganiz(?:e|es|ed|ing)|
+        internal implementation changes?
+      )\z
+    /ix
+    return if value.match?(implementation_only)
+
+    violations = changelog_internal_violations(value)
+    unless violations.empty?
+      log(:warn,
+          "Omitting a summary bullet that cannot be safely sanitized: #{violations.join(', ')}.")
+      return
+    end
+
+    value
+  end
+
+  def changelog_category_for(bullet)
+    patterns = {
+      'Breaking Changes' => /\b(?:breaking|deprecat(?:e|es|ed|ion)|remove(?:s|d)?|drop(?:s|ped)?|no longer)\b/i,
+      'Fixed' => /\b(?:fix(?:es|ed|ing)?|bug(?:s)?|resolv(?:e|es|ed|ing)|correct(?:s|ed|ing)?|prevent(?:s|ed|ing))\b/i,
+      'Added' => /
+        \b(?:add(?:s|ed|ing)?|introduc(?:e|es|ed|ing)|new support|support(?:s|ed|ing)? for|enable(?:s|d|ing)?)\b
+      /ix
+    }
+
+    patterns.each do |category, pattern|
+      return category if bullet.match?(pattern)
+    end
+
+    'Changed'
   end
 
   def insert_changelog_entry(original, entry)
@@ -918,50 +1069,6 @@ class ReleaseDocumentation
     end
   end
 
-  def repair_changelog_entry(entry, summary, heading, violations)
-    prompt = <<~PROMPT
-      Rewrite the rejected CHANGELOG draft as concise, user-facing release notes.
-
-      REQUIRED FIRST LINE (preserve exactly):
-      #{heading}
-
-      The previous draft was rejected for these reasons:
-      #{violations.map { |violation| "- #{violation}" }.join("\n")}
-
-      Rewrite requirements:
-      - Remove private helper names, internal methods, implementation classes, instance variables,
-        internal constants, trackers, refactoring details and implementation mechanics.
-      - Express the actual user-visible outcome in plain language instead of naming internal code.
-      - Preserve every distinct user-facing behavior that is supported by the implementation summary.
-      - Do not invent behavior, API signatures, accepted values or defaults.
-      - Keep only these category headings when relevant: Added, Changed, Fixed, Breaking Changes.
-      - Each category must contain one or more concise Markdown bullets.
-      - Do not include code fences, commentary, historical releases or another top-level heading.
-      - Return NONE only when the implementation summary contains no user-facing change.
-
-      AUTHORITATIVE IMPLEMENTATION SUMMARY (derived from lib/ only):
-      #{summary}
-
-      REJECTED DRAFT (rewrite it; do not repeat its internal details):
-      #{entry}
-    PROMPT
-
-    repaired = clean_markdown(
-      ask_ai(prompt, max_output_tokens: CHANGELOG_OUTPUT_TOKENS,
-                     purpose: 'CHANGELOG cleanup')
-    )
-    raise Error, 'AI cleanup removed the entire CHANGELOG even though user-facing changes were identified.' if repaired.casecmp('NONE').zero?
-
-    remaining = changelog_internal_violations(repaired)
-    unless remaining.empty?
-      raise Error,
-            "AI cleanup still contains internal-detail markers: #{remaining.join(', ')}. " \
-            'Review the generated implementation summary and release notes manually.'
-    end
-
-    repaired
-  end
-
   def clean_markdown(content)
     value = content.to_s.strip
     # Remove a wrapper only when the entire response is fenced. Do not remove
@@ -983,7 +1090,8 @@ class ReleaseDocumentation
       started = monotonic_time
       @api_calls += 1
       log(:info,
-          "AI request ##{@api_calls} started: #{purpose}; prompt_chars=#{prompt.length}; output_limit=#{max_output_tokens} tokens.")
+          "AI request ##{@api_calls} started: #{purpose}; prompt_chars=#{prompt.length}; " \
+          "output_limit=#{max_output_tokens} tokens.")
 
       begin
         result, usage = if @backend == :ollama
@@ -993,7 +1101,8 @@ class ReleaseDocumentation
                         end
         duration = monotonic_time - started
         log(:info,
-            "AI request ##{@api_calls} succeeded in #{format('%.1f', duration)}s; response_chars=#{result.length}; usage=#{usage.inspect}.")
+            "AI request ##{@api_calls} succeeded in #{format('%.1f', duration)}s; " \
+            "response_chars=#{result.length}; usage=#{usage.inspect}.")
         @next_remote_request_at = monotonic_time + @request_interval if @backend == :remote
         return result
       rescue Error => e
@@ -1004,7 +1113,8 @@ class ReleaseDocumentation
         wait_seconds = retry_after || [10 * (2**(attempts - 1)), MAX_RETRY_WAIT_SECONDS].min
         wait_seconds = [wait_seconds, MAX_RETRY_WAIT_SECONDS].min
         log(:warn,
-            "Retryable AI failure (attempt #{attempts}/#{MAX_API_ATTEMPTS}): #{redact(e.message)}. Retrying in #{wait_seconds}s.")
+            "Retryable AI failure (attempt #{attempts}/#{MAX_API_ATTEMPTS}): " \
+            "#{redact(e.message)}. Retrying in #{wait_seconds}s.")
 
         if @backend == :remote
           now = monotonic_time
@@ -1053,12 +1163,8 @@ class ReleaseDocumentation
                   maxOutputTokens: max_output_tokens
                 }
                 if structured_schema
-                  generation_config[:responseFormat] = {
-                    text: {
-                      mimeType: 'APPLICATION_JSON',
-                      schema: gemini_schema(structured_schema)
-                    }
-                  }
+                  generation_config[:responseMimeType] = 'application/json'
+                  generation_config[:responseJsonSchema] = structured_schema
                 end
                 {
                   contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -1074,7 +1180,7 @@ class ReleaseDocumentation
                   temperature: 0.2,
                   stream: false
                 }
-                token_limit_key = @provider == 'openrouter' ? :max_tokens : :max_completion_tokens
+                token_limit_key = :max_completion_tokens
                 request[token_limit_key] = max_output_tokens
                 request[:response_format] = { type: 'json_object' } if structured_schema
                 request
@@ -1095,7 +1201,7 @@ class ReleaseDocumentation
 
     if @provider == 'openrouter'
       headers['HTTP-Referer'] = "https://github.com/#{@repository}" unless @repository.empty?
-      headers['X-OpenRouter-Title'] = 'Bharat Filter Engine Release Documentation'
+      headers['X-Title'] = 'Bharat Filter Engine Release Documentation'
     end
 
     response = post_json(url, payload, headers: headers, retryable: true)
@@ -1136,21 +1242,6 @@ class ReleaseDocumentation
     end
 
     [validate_ai_text!(text), usage]
-  end
-
-  def gemini_schema(schema)
-    schema.each_with_object({}) do |(key, value), result|
-      result[key] = case value
-                    when Hash
-                      gemini_schema(value)
-                    when Array
-                      value.map { |item| item.is_a?(Hash) ? gemini_schema(item) : item }
-                    when String
-                      key.to_s == 'type' ? value.upcase : value
-                    else
-                      value
-                    end
-    end
   end
 
   def call_ollama(prompt, max_output_tokens, structured_schema: nil)
@@ -1288,7 +1379,8 @@ class ReleaseDocumentation
     readme = @generated_readme.to_s
     changelog = @generated_changelog.to_s
     original_readme = File.read(path('README.original.md'))
-    original_changelog = @changelog_base_content || unwrap_outer_markdown_fence(File.read(path('CHANGELOG.original.md')))
+    original_changelog = @changelog_base_content ||
+                         unwrap_outer_markdown_fence(File.read(path('CHANGELOG.original.md')))
     raise Error, 'Generated README is empty.' if readme.strip.empty?
     raise Error, 'Generated CHANGELOG is empty.' if changelog.strip.empty?
     if readme.bytesize < (original_readme.bytesize * 0.50).floor
@@ -1318,7 +1410,8 @@ class ReleaseDocumentation
     heading_count = changelog.lines.count { |line| version_heading.match?(line.strip) }
     raise Error, "Duplicate CHANGELOG heading found for #{@version}." if heading_count > 1
 
-    secret_values = %w[GROQ_API_KEY OPENROUTER_API_KEY CEREBRAS_API_KEY GEMINI_API_KEY GH_TOKEN GITHUB_TOKEN].filter_map do |key|
+    secret_names = %w[GROQ_API_KEY OPENROUTER_API_KEY CEREBRAS_API_KEY GEMINI_API_KEY GH_TOKEN GITHUB_TOKEN]
+    secret_values = secret_names.filter_map do |key|
       ENV[key].to_s unless ENV[key].to_s.empty?
     end
     [readme, changelog, summary].each do |content|
