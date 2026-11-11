@@ -826,6 +826,13 @@ class ReleaseDocumentation
                                           purpose: 'CHANGELOG entry'))
     raise Error, 'AI returned NONE even though user-facing implementation changes were identified.' if entry.casecmp('NONE').zero?
 
+    violations = changelog_internal_violations(entry)
+    unless violations.empty?
+      log(:warn,
+          "CHANGELOG draft contains internal-detail markers (#{violations.join(', ')}); requesting one cleanup pass.")
+      entry = repair_changelog_entry(entry, summary, heading, violations)
+    end
+
     validate_changelog_entry!(entry, heading)
     @changelog_entry = entry.rstrip
     insert_changelog_entry(original, @changelog_entry)
@@ -883,9 +890,17 @@ class ReleaseDocumentation
     end
     raise Error, 'AI returned no categorized CHANGELOG bullets.' unless entry.match?(/^[-*]\s+/)
 
-    internal_patterns = [
-      /@[A-Za-z_]\w*/,
-      /
+    violations = changelog_internal_violations(entry)
+    return if violations.empty?
+
+    raise Error,
+          "CHANGELOG still contains internal-detail markers after cleanup: #{violations.join(', ')}."
+  end
+
+  def changelog_internal_violations(entry)
+    checks = {
+      'Ruby instance variable in inline code' => /`@[A-Za-z_]\w*`/,
+      'private implementation identifier' => /
         \b(?:
           ColumnHelper|JoinTracker|apply_subquery_group|apply_rule|apply_array_filter|
           apply_boolean_filter|apply_filter_by_type|apply_presence_filter|apply_condition|
@@ -893,15 +908,58 @@ class ReleaseDocumentation
           extract_bounds|like_query|field_based_search|nested_condition
         )\b
       /x,
-      /numeric pattern constant/i,
-      /future use/i,
-      /no user-facing changes were made/i
-    ]
-    return unless internal_patterns.any? { |pattern| entry.match?(pattern) }
+      'internal numeric-constant description' => /numeric pattern constant/i,
+      'implementation placeholder wording' => /future use/i,
+      'internal no-change statement' => /no user-facing changes were made/i
+    }
 
-    raise Error,
-          'AI included internal implementation details in the CHANGELOG; ' \
-          'refusing to publish noisy release notes.'
+    checks.filter_map do |description, pattern|
+      description if entry.match?(pattern)
+    end
+  end
+
+  def repair_changelog_entry(entry, summary, heading, violations)
+    prompt = <<~PROMPT
+      Rewrite the rejected CHANGELOG draft as concise, user-facing release notes.
+
+      REQUIRED FIRST LINE (preserve exactly):
+      #{heading}
+
+      The previous draft was rejected for these reasons:
+      #{violations.map { |violation| "- #{violation}" }.join("\n")}
+
+      Rewrite requirements:
+      - Remove private helper names, internal methods, implementation classes, instance variables,
+        internal constants, trackers, refactoring details and implementation mechanics.
+      - Express the actual user-visible outcome in plain language instead of naming internal code.
+      - Preserve every distinct user-facing behavior that is supported by the implementation summary.
+      - Do not invent behavior, API signatures, accepted values or defaults.
+      - Keep only these category headings when relevant: Added, Changed, Fixed, Breaking Changes.
+      - Each category must contain one or more concise Markdown bullets.
+      - Do not include code fences, commentary, historical releases or another top-level heading.
+      - Return NONE only when the implementation summary contains no user-facing change.
+
+      AUTHORITATIVE IMPLEMENTATION SUMMARY (derived from lib/ only):
+      #{summary}
+
+      REJECTED DRAFT (rewrite it; do not repeat its internal details):
+      #{entry}
+    PROMPT
+
+    repaired = clean_markdown(
+      ask_ai(prompt, max_output_tokens: CHANGELOG_OUTPUT_TOKENS,
+                     purpose: 'CHANGELOG cleanup')
+    )
+    raise Error, 'AI cleanup removed the entire CHANGELOG even though user-facing changes were identified.' if repaired.casecmp('NONE').zero?
+
+    remaining = changelog_internal_violations(repaired)
+    unless remaining.empty?
+      raise Error,
+            "AI cleanup still contains internal-detail markers: #{remaining.join(', ')}. " \
+            'Review the generated implementation summary and release notes manually.'
+    end
+
+    repaired
   end
 
   def clean_markdown(content)
