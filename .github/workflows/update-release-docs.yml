@@ -27,20 +27,24 @@ jobs:
     timeout-minutes: 360
 
     env:
+      LANG: C.UTF-8
+      # Repository VARIABLES (non-secret). Everything except AI_MODEL has a default.
       AI_ENABLED: ${{ vars.AI_ENABLED }}
       AI_PROVIDER: ${{ vars.AI_PROVIDER }}
       AI_MODEL: ${{ vars.AI_MODEL }}
       AI_BASE_URL: ${{ vars.AI_BASE_URL }}
+      AI_MAX_REQUEST_TOKENS: ${{ vars.AI_MAX_REQUEST_TOKENS }}
+      AI_MAX_OUTPUT_TOKENS: ${{ vars.AI_MAX_OUTPUT_TOKENS }}
+      AI_TOKENS_PER_MINUTE: ${{ vars.AI_TOKENS_PER_MINUTE }}
       OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
-      AI_REQUEST_INTERVAL_SECONDS: ${{ vars.AI_REQUEST_INTERVAL_SECONDS || '65' }}
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
     steps:
-      - name: Checkout default branch and full Git history
+      - name: Checkout default branch with full history and tags
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref_name || github.event.repository.default_branch }}
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -49,195 +53,53 @@ jobs:
         with:
           ruby-version: '3.3'
 
-      - name: Initialize diagnostics directory
+      - name: Check script syntax
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p .release-docs
-          {
-            echo '## Release documentation run'
-            echo
-            echo "- Trigger: ${GITHUB_EVENT_NAME}"
-            echo "- Requested tag: ${RELEASE_TAG}"
-            echo "- Backend flag: ${AI_ENABLED:-missing}"
-            echo "- Runner: ${RUNNER_OS} / ${RUNNER_ARCH}"
-            echo
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Validate backend configuration
-        shell: bash
-        env:
-          AI_ENABLED: ${{ vars.AI_ENABLED }}
-          AI_PROVIDER: ${{ vars.AI_PROVIDER }}
-          AI_MODEL: ${{ vars.AI_MODEL }}
-          OLLAMA_MODEL: ${{ vars.OLLAMA_MODEL }}
-          GROQ_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.GROQ_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.OPENROUTER_API_KEY || '' }}
-          CEREBRAS_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.CEREBRAS_API_KEY || '' }}
-          GEMINI_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.GEMINI_API_KEY || '' }}
-        run: |
-          set -Eeuo pipefail
-
-          case "${AI_ENABLED:-}" in
-            true)
-              test -n "${AI_MODEL:-}" || { echo 'AI_MODEL is required.'; exit 1; }
-              case "${AI_PROVIDER:-}" in
-                groq) test -n "${GROQ_API_KEY:-}" || { echo 'GROQ_API_KEY is required.'; exit 1; } ;;
-                openrouter) test -n "${OPENROUTER_API_KEY:-}" || { echo 'OPENROUTER_API_KEY is required.'; exit 1; } ;;
-                cerebras) test -n "${CEREBRAS_API_KEY:-}" || { echo 'CEREBRAS_API_KEY is required.'; exit 1; } ;;
-                gemini) test -n "${GEMINI_API_KEY:-}" || { echo 'GEMINI_API_KEY is required.'; exit 1; } ;;
-                *) echo "Unsupported AI_PROVIDER: ${AI_PROVIDER:-missing}"; exit 1 ;;
-              esac
-              ;;
-            false)
-              test -n "${OLLAMA_MODEL:-}" || { echo 'OLLAMA_MODEL is required.'; exit 1; }
-              ;;
-            *)
-              echo 'AI_ENABLED must be exactly true or false.'
-              exit 1
-              ;;
-          esac
-
-      - name: Validate Ruby script syntax
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          ruby --version
           ruby -c scripts/generate_release_docs.rb
-          command -v git
-          command -v curl
-          command -v gh
 
-      - name: Install and start Ollama
+      - name: Install and start Ollama (only when AI_ENABLED=false)
         if: env.AI_ENABLED == 'false'
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          mkdir -p .release-docs
-
-          echo "::group::Install Ollama"
-
-          export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
-
-          curl -fsSL https://ollama.com/install.sh \
-            | tee .release-docs/ollama-install.log \
-            | sh 2>&1
-
-          hash -r
-
-          OLLAMA_BIN="$(command -v ollama || true)"
-
-          if [[ -z "$OLLAMA_BIN" ]]; then
-            for candidate in \
-              /usr/local/bin/ollama \
-              /usr/bin/ollama \
-              /bin/ollama \
-              /opt/ollama/bin/ollama; do
-              if [[ -x "$candidate" ]]; then
-                OLLAMA_BIN="$candidate"
-                break
-              fi
-            done
-          fi
-
-          if [[ -z "$OLLAMA_BIN" ]]; then
-            echo "::error::Ollama binary was not found after installation."
-            echo "Searching common installation directories..."
-
-            find /usr/local /usr/bin /opt \
-              -type f -name ollama -print 2>/dev/null || true
-
-            cat .release-docs/ollama-install.log || true
-            exit 1
-          fi
-
-          echo "Ollama binary: $OLLAMA_BIN"
-          "$OLLAMA_BIN" --version
-
-          echo "$OLLAMA_BIN" > .release-docs/ollama-bin.txt
-
-          echo "$OLLAMA_BIN" >> "$GITHUB_PATH"
-
-          echo "::endgroup::"
-
-          echo "::group::Start Ollama service"
-
-          if ! curl -fsS \
-            http://127.0.0.1:11434/api/tags >/dev/null; then
-
-            nohup "$OLLAMA_BIN" serve \
-              > .release-docs/ollama-server.log 2>&1 < /dev/null &
-
-            echo "$!" > .release-docs/ollama.pid
-          else
-            echo "Ollama is already running."
-          fi
-
-          ready=false
-
-          for attempt in $(seq 1 90); do
-            if curl -fsS \
-              http://127.0.0.1:11434/api/tags >/dev/null; then
-              ready=true
-              echo "Ollama ready after attempt $attempt."
-              break
-            fi
-
-            if ! kill -0 "$(cat .release-docs/ollama.pid 2>/dev/null)" \
-              2>/dev/null; then
-              echo "Ollama process exited unexpectedly."
-              cat .release-docs/ollama-server.log || true
-              exit 1
-            fi
-
+          test -n "${OLLAMA_MODEL:-}" || { echo '::error::OLLAMA_MODEL is required when AI_ENABLED=false'; exit 1; }
+          curl -fsSL https://ollama.com/install.sh | sh
+          nohup ollama serve > .release-docs/ollama-server.log 2>&1 < /dev/null &
+          for _ in $(seq 1 90); do
+            curl -fsS http://127.0.0.1:11434/api/tags >/dev/null && break
             sleep 2
           done
+          curl -fsS http://127.0.0.1:11434/api/tags >/dev/null || { cat .release-docs/ollama-server.log; exit 1; }
+          ollama pull "$OLLAMA_MODEL" 2>&1 | tee .release-docs/ollama-pull.log
 
-          if [[ "$ready" != true ]]; then
-            echo "::error::Ollama did not become ready within 180 seconds."
-            cat .release-docs/ollama-server.log || true
-            exit 1
-          fi
-
-          echo "::endgroup::"
-
-          echo "::group::Pull Ollama model"
-
-          "$OLLAMA_BIN" pull "$OLLAMA_MODEL" \
-            2>&1 | tee .release-docs/ollama-pull.log
-
-          echo "::endgroup::"
-
-          echo "Ollama setup completed successfully."
-
-      - name: Generate documentation and create pull request
-        id: generate
+      - name: Generate documentation and open pull request
         shell: bash
         env:
-          GROQ_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.GROQ_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.OPENROUTER_API_KEY || '' }}
-          CEREBRAS_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.CEREBRAS_API_KEY || '' }}
-          GEMINI_API_KEY: ${{ vars.AI_ENABLED == 'true' && secrets.GEMINI_API_KEY || '' }}
+          # Secrets are visible to this one step only; the script reads just the selected provider's key.
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SERVER_URL: ${{ github.server_url }}
         run: |
           set -Eeuo pipefail
           ruby scripts/generate_release_docs.rb 2>&1 | tee .release-docs/run.log
 
-      - name: Upload execution diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: release-docs-diagnostics-${{ github.run_id }}
           path: |
             .release-docs/run.log
+            .release-docs/manifest.json
+            .release-docs/implementation-summary.md
             .release-docs/ollama-server.log
             .release-docs/ollama-pull.log
-            .release-docs/manifest.json
-            .release-docs/ollama-install.log
-            .release-docs/ollama-bin.txt
           if-no-files-found: ignore
           retention-days: 14
