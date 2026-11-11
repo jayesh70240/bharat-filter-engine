@@ -459,8 +459,10 @@ class ReleaseDocumentation
       - Never select the introduction, table of contents, installation, contributing or license
         unless the implementation summary explicitly proves they changed.
       - The lib/ implementation summary is authoritative. Specs are not proof.
-      - Return valid JSON only, exactly: {"sections":["## Heading", ...]}
-      - Use exact heading strings from the supplied list. Return an empty array if none apply.
+      - Return a JSON object only, exactly: {"sections":["## Heading", ...]}
+      - Use exact heading strings from the supplied list.
+      - If no existing README section needs an update, return exactly: {"sections":[]}
+      - Never return a bare JSON array.
 
       IMPLEMENTATION SUMMARY:
       #{summary}
@@ -538,8 +540,18 @@ class ReleaseDocumentation
     json_text = response.to_s.strip
     json_text = json_text.sub(/\A```(?:json)?\s*/i, '').sub(/\s*```\z/, '')
     data = JSON.parse(json_text)
-    selected = data.fetch('sections')
-    raise Error, 'AI returned invalid README section selections.' unless selected.is_a?(Array) && selected.all? { |heading| heading.is_a?(String) && headings.include?(heading) }
+    selected = case data
+               when Hash
+                 data.fetch('sections')
+               when Array
+                 log(:warn, 'AI returned a bare JSON array for README selection; accepting it for backward compatibility.')
+                 data
+               else
+                 raise Error, 'AI returned an invalid README section-selection structure.'
+               end
+    unless selected.is_a?(Array) && selected.all? { |heading| heading.is_a?(String) && headings.include?(heading) }
+      raise Error, 'AI returned invalid README section selections. Every selection must exactly match an existing heading.'
+    end
     raise Error, 'AI returned duplicate README section selections.' unless selected.uniq == selected
 
     { 'sections' => selected }
