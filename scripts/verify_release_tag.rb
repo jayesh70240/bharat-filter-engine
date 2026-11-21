@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Usage: ruby script/verify_release_tag.rb v0.2.0
+# Usage: ruby scripts/verify_release_tag.rb v0.2.0
 #
 # Fails (exit 1) unless the git tag matches BharatFilterEngine::VERSION, so a
 # release can never publish a gem whose version differs from its tag.

@@ -8,7 +8,7 @@ query string) into a filtered `ActiveRecord::Relation` — including
 filters on associated models, free-text search, and dynamically
 populated dropdown values.
 
-[![Gem Version](https://img.shields.io/badge/version-0.1.2-blue)](CHANGELOG.md)
+[![Gem Version](https://img.shields.io/badge/version-0.2.0-blue)](CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
@@ -27,6 +27,7 @@ populated dropdown values.
   - [integer / float](#integer--float)
   - [daterange](#daterange)
   - [search](#search)
+  - [presence](#presence)
 - [Nested / association filters](#nested--association-filters)
 - [Free-text search (`search` filter type)](#free-text-search-search-filter-type)
 - [Dynamic filter values (for dropdowns)](#dynamic-filter-values-for-dropdowns)
@@ -52,6 +53,9 @@ populated dropdown values.
 - Automatically ignores blank params so existing scope chains and
   default ordering are left untouched
 - Legacy config format still supported (see below)
+- Presence filters for selecting records with or without a value.
+- Negated filters for supported string, array, boolean and exact numeric conditions.
+- Inclusive numeric between filters with optional lower or upper bounds.
 
 ## Installation
 
@@ -146,11 +150,25 @@ Each entry in `config` is a hash describing one filter rule:
 ```ruby
 {
   type:        :single | :nested,   # :single = direct column, :nested = via association
-  filter_type: :string | :array | :boolean | :integer | :float | :daterange | :search,
+  filter_type: :string | :array | :boolean | :integer | :float | :daterange | :search | :presence,
   dbcolumn:    :column_name,        # the actual DB column (or one of the search columns)
   association: :lead,               # required when type: :nested — "__" separated for multi-level
-  range_type:  :gte | :lte,         # optional, for :integer / :float
+  range_type:  :gte | :lte | :between,
+  negate: true, # optional; see supported combinations below
   dbcolumns:   [:stage, :"lead__source"] # required when filter_type: :search
+}
+```
+
+`negate: true` excludes matching values for `:string`, `:array`, and `:boolean` filters, and exact `:integer` / `:float` filters. It cannot be combined with `range_type:` and is not supported by `:daterange`, `:search`, or `:presence`.
+
+```ruby
+config = {
+  excluded_status: {
+    type: :single,
+    filter_type: :array,
+    dbcolumn: :approval_status,
+    negate: true
+  }
 }
 ```
 
@@ -238,8 +256,7 @@ BharatFilterEngine.apply(
 
 ### integer / float
 
-Exact match by default. Add `range_type: :gte` or `range_type: :lte`
-for open-ended range filters.
+Exact match is the default. Use `range_type: :gte` or `:lte` for one-sided comparisons, or `range_type: :between` for an inclusive interval. The between value accepts a `{ from:, to: }` hash, a two-item array, or a comma-separated string; either bound may be omitted.
 
 Exact numeric filters also accept a comma-separated list (`"1,2"` matches
 either value). For one formatted number, standard Western grouping
@@ -285,6 +302,26 @@ config = {
 
 BharatFilterEngine.apply(scope: Sale.all, config: config, params: { conversion_rate: "20.5" })
 # SQL: WHERE sales.conversion_rate <= 20.5
+```
+
+```ruby
+# Inclusive numeric range (both bounds are inclusive)
+config = {
+  amount: {
+    type: :single,
+    filter_type: :integer,
+    dbcolumn: :amount,
+    range_type: :between
+  }
+}
+
+BharatFilterEngine.apply(
+  scope: Sale.all,
+  config: config,
+  params: { amount: { from: 100, to: 500 } }
+)
+# Equivalent bounds: [100, 500] or "100,500"
+# Open-ended bounds: { from: 100 } or { to: 500 }
 ```
 
 ### daterange
@@ -353,6 +390,26 @@ config = {
 BharatFilterEngine.apply(scope: Sale.all, config: config, params: { q: "google" })
 ```
 
+### presence
+
+Checks whether a column has a value. Pass `true` to keep present values and `false` to keep blank values. For string/text columns, blank means `NULL` or an empty string; other column types treat `NULL` as blank.
+
+```ruby
+config = {
+  stage_present: {
+    type: :single,
+    filter_type: :presence,
+    dbcolumn: :stage
+  }
+}
+
+BharatFilterEngine.apply(
+  scope: Sale.all,
+  config: config,
+  params: { stage_present: true }
+)
+```
+
 ## Nested / association filters
 
 Set `type: :nested` and `association:` to filter on a column that
@@ -409,6 +466,8 @@ BharatFilterEngine.apply(
 
 The `search` filter type wires up `BharatFilterEngine::SearchBuilder`,
 which supports two input styles:
+
+Search terms treat `\`, `%`, and `_` as literal input characters; they are escaped before the SQL `LIKE` match is built.
 
 **1. Simple search** — no `=` sign. Matches the query (case-insensitive,
 substring) against *any* of the allowed columns, `OR`-ed together.
@@ -468,12 +527,13 @@ BharatFilterEngine::SearchBuilder.new(
 Use `BharatFilterEngine.filter_values` to fetch the distinct,
 non-blank values for a configured filter field — handy for populating
 a `<select>`/dropdown/autocomplete without writing a separate query.
+Optional `filter_term` narrows the returned values by a substring match, and `filter_limit` limits the number of values returned. Both are optional; a positive limit is applied. Search characters `%`, `_`, and `\` are treated literally.
 
 ```ruby
 BharatFilterEngine.filter_values(
   scope: Sale.all,
   config: FILTER_CONFIG,
-  params: { filter_field: "stage" }
+  params: { filter_field: "stage", filter_term: "qual", filter_limit: 20 }
 )
 # => ["new", "qualified", ...]  (sorted, unique, blanks excluded)
 
@@ -499,7 +559,9 @@ You can also use `BharatFilterEngine::DynamicFilterValues` directly:
 ```ruby
 BharatFilterEngine::DynamicFilterValues.new(
   scope: Sale.all,
-  field: "lead__client__name"   # "__" notation, same as association filters
+  field: "lead__client__name",
+  term: "Acme",
+  limit: 20
 ).call
 # => ["Acme Client", "Beta Client", ...] or nil if the field is invalid
 ```

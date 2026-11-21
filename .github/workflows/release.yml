@@ -35,7 +35,7 @@ jobs:
         id: tag
         env:
           TAG: ${{ github.ref_name }}
-        run: ruby script/verify_release_tag.rb "$TAG"
+        run: ruby scripts/verify_release_tag.rb "$TAG"
       - name: Run specs
         run: bundle exec rspec
       - name: Build gem
